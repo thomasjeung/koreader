@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Button = require("ui/widget/button")
@@ -17,7 +18,6 @@ local LeftContainer = require("ui/widget/container/topcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local LuaSettings = require("luasettings")
 local OverlapGroup = require("ui/widget/overlapgroup")
-local RenderText = require("ui/rendertext")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
@@ -39,20 +39,12 @@ local DoubleKeyValueTitle = VerticalGroup:new{
 function DoubleKeyValueTitle:init()
     self.close_button = CloseButton:new{ window = self }
     local btn_width = self.close_button:getSize().w
-    local title_txt_width = RenderText:sizeUtf8Text(
-                                0, self.width, self.tface, self.title).x
-    local show_title_txt
-    if self.width < (title_txt_width + btn_width) then
-        show_title_txt = RenderText:truncateTextByWidth(
-                            self.title, self.tface, self.width - btn_width)
-    else
-        show_title_txt = self.title
-    end
     -- title and close button
     table.insert(self, OverlapGroup:new{
         dimen = { w = self.width },
         TextWidget:new{
-            text = show_title_txt,
+            text = self.title,
+            max_width = self.width - btn_width,
             face = self.tface,
         },
         self.close_button,
@@ -114,7 +106,6 @@ local DoubleKeyValueItem = InputContainer:new{
 
 function DoubleKeyValueItem:init()
     self.dimen = Geom:new{align = "left", w = self.width, h = self.height}
-    local padding = Screen:scaleBySize(20)
     if self.callback and Device:isTouchDevice() then
         self.ges_events.Tap = {
             GestureRange:new{
@@ -123,18 +114,8 @@ function DoubleKeyValueItem:init()
             }
         }
     end
-    local key_w = RenderText:sizeUtf8Text(0, self.width, self.cface_down, self.key).x
-    local value_w = RenderText:sizeUtf8Text(0, self.width, self.cface_up, self.value).x
-    if key_w > self.width - 2*padding then
-        self.show_key = RenderText:truncateTextByWidth(self.key, self.cface_down, self.width - 2*padding)
-    else
-        self.show_key = self.key
-    end
-    if value_w > self.width - 2*padding then
-        self.show_value = RenderText:truncateTextByWidth(self.value, self.cface_up, self.width - 2*padding)
-    else
-        self.show_value = self.value
-    end
+    local padding = Screen:scaleBySize(20)
+    local max_width = self.width - 2*padding
     local h = self.dimen.h / 2
     local w = self.dimen.w
     self[1] = FrameContainer:new{
@@ -147,7 +128,8 @@ function DoubleKeyValueItem:init()
                 padding = 0,
                 dimen = Geom:new{ h = h, w = w },
                 TextWidget:new{
-                    text = self.show_value,
+                    text = self.value,
+                    max_width = max_width,
                     face = self.cface_up,
                 }
             },
@@ -155,7 +137,8 @@ function DoubleKeyValueItem:init()
                 padding = 0,
                 dimen = Geom:new{ h = h, w = w },
                 TextWidget:new{
-                    text = self.show_key,
+                    text = self.key,
+                    max_width = max_width,
                     face = self.cface_down,
                 }
             }
@@ -257,15 +240,20 @@ function DoubleKeyValuePage:init()
         text_font_bold = false,
     }
     -- group for page info
+    local chevron_left = "resources/icons/appbar.chevron.left.png"
+    local chevron_right = "resources/icons/appbar.chevron.right.png"
+    if BD.mirroredUILayout() then
+        chevron_left, chevron_right = chevron_right, chevron_left
+    end
     self.page_info_left_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.left.png",
+        icon = chevron_left,
         callback = function() self:prevPage() end,
         bordersize = 0,
         show_parent = self,
     }
     self.page_info_right_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.right.png",
-        callback = function() self:_nextPage() end,
+        icon = chevron_right,
+        callback = function() self:nextPage() end,
         bordersize = 0,
         show_parent = self,
     }
@@ -395,7 +383,7 @@ function DoubleKeyValuePage:_populateItems()
         table.insert(self.main_content,
                      VerticalSpan:new{ width = self.item_margin })
     end
-    self.page_info_text:setText(T(_("page %1 of %2"), self.show_page, self.pages))
+    self.page_info_text:setText(T(_("Page %1 of %2"), self.show_page, self.pages))
     self.page_info_left_chev:showHide(self.pages > 1)
     self.page_info_right_chev:showHide(self.pages > 1)
     self.page_info_left_chev:enableDisable(self.show_page > 1)
@@ -431,16 +419,17 @@ function DoubleKeyValuePage:onPrevPage()
 end
 
 function DoubleKeyValuePage:onSwipe(arg, ges_ev)
-    if ges_ev.direction == "west" then
+    local direction = BD.flipDirectionIfMirroredUILayout(ges_ev.direction)
+    if direction == "west" then
         self:_nextPage()
         return true
-    elseif ges_ev.direction == "east" then
+    elseif direction == "east" then
         self:prevPage()
         return true
-    elseif ges_ev.direction == "south" then
+    elseif direction == "south" then
         -- Allow easier closing with swipe down
         self:onClose()
-    elseif ges_ev.direction == "north" then
+    elseif direction == "north" then
         -- no use for now
         do end -- luacheck: ignore 541
     else -- diagonal swipe

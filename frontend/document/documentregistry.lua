@@ -56,8 +56,16 @@ end
 function DocumentRegistry:hasProvider(file)
     local filename_suffix = string.lower(util.getFileNameSuffix(file))
 
-    if self.filetype_provider[filename_suffix] then
+    local filetype_provider = G_reader_settings:readSetting("provider") or {}
+    if self.filetype_provider[filename_suffix] or filetype_provider[filename_suffix] then
         return true
+    end
+    local DocSettings = require("docsettings")
+    if DocSettings:hasSidecarFile(file) then
+        local doc_settings_provider = DocSettings:open(file):readSetting("provider")
+        if doc_settings_provider then
+            return true
+        end
     end
     return false
 end
@@ -96,6 +104,12 @@ function DocumentRegistry:getProvider(file)
 
         -- highest weighted provider
         return providers[1].provider
+    else
+        for _, provider in ipairs(self.providers) do
+            if provider.extension == "txt" then
+                return provider.provider
+            end
+        end
     end
 end
 
@@ -107,13 +121,23 @@ function DocumentRegistry:getProviders(file)
 
     --- @todo some implementation based on mime types?
     for _, provider in ipairs(self.providers) do
+        local added = false
         local suffix = string.sub(file, -string.len(provider.extension) - 1)
         if string.lower(suffix) == "."..provider.extension then
+            for i, prov_prev in ipairs(providers) do
+                if prov_prev.provider == provider.provider then
+                    if prov_prev.weight >= provider.weight then
+                        added = true
+                    else
+                        table.remove(providers, i)
+                    end
+                end
+            end
         -- if extension == provider.extension then
             -- stick highest weighted provider at the front
-            if #providers >= 1 and provider.weight > providers[1].weight then
+            if not added and #providers >= 1 and provider.weight > providers[1].weight then
                 table.insert(providers, 1, provider)
-            else
+            elseif not added then
                 table.insert(providers, provider)
             end
         end

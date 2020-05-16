@@ -11,7 +11,15 @@ local function kindleEnableWifi(toggle)
         lipc_handle = lipc.init("com.github.koreader.networkmgr")
     end
     if lipc_handle then
-        lipc_handle:set_int_property("com.lab126.cmd", "wirelessEnable", toggle)
+        -- Be extremely thorough... c.f., #6019
+        -- NOTE: I *assume* this'll also ensure we prefer WiFi over 3G/4G, which is a plus in my book...
+        if toggle == 1 then
+            lipc_handle:set_int_property("com.lab126.cmd", "wirelessEnable", 1)
+            lipc_handle:set_int_property("com.lab126.wifid", "enable", 1)
+        else
+            lipc_handle:set_int_property("com.lab126.wifid", "enable", 0)
+            lipc_handle:set_int_property("com.lab126.cmd", "wirelessEnable", 0)
+        end
         lipc_handle:close()
     else
         -- No liblipclua on FW < 5.x ;)
@@ -86,6 +94,8 @@ local Kindle = Generic:new{
     hasOTAUpdates = yes,
     -- NOTE: HW inversion is generally safe on mxcfb Kindles
     canHWInvert = yes,
+    -- NOTE: Newer devices will turn the frontlight off at 0
+    canTurnFrontlightOff = yes,
 }
 
 function Kindle:initNetworkManager(NetworkMgr)
@@ -142,7 +152,7 @@ function Kindle:usbPlugIn()
     -- NOTE: We cannot support running in USBMS mode (we cannot, we live on the partition being exported!).
     --       But since that's the default state of the Kindle system, we have to try to make nice...
     --       To that end, we're currently SIGSTOPping volumd to inhibit the system's USBMS mode handling.
-    --       It's not perfect (f.g., if the system is setup for USBMS and not USBNet,
+    --       It's not perfect (e.g., if the system is setup for USBMS and not USBNet,
     --       the frontlight will be turned off when plugged in), but it at least prevents users from completely
     --       shooting themselves in the foot (c.f., https://github.com/koreader/koreader/issues/3220)!
     --       On the upside, we don't have to bother waking up the WM to show us the USBMS screen :D.
@@ -279,6 +289,7 @@ local KindlePaperWhite = Kindle:new{
     model = "KindlePaperWhite",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     display_dpi = 212,
     touch_dev = "/dev/input/event0",
 }
@@ -287,6 +298,7 @@ local KindlePaperWhite2 = Kindle:new{
     model = "KindlePaperWhite2",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     display_dpi = 212,
     touch_dev = "/dev/input/event1",
 }
@@ -301,6 +313,7 @@ local KindleVoyage = Kindle:new{
     model = "KindleVoyage",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     hasKeys = yes,
     display_dpi = 300,
     touch_dev = "/dev/input/event1",
@@ -310,6 +323,7 @@ local KindlePaperWhite3 = Kindle:new{
     model = "KindlePaperWhite3",
     isTouchDevice = yes,
     hasFrontlight = yes,
+    canTurnFrontlightOff = no,
     display_dpi = 300,
     touch_dev = "/dev/input/event1",
 }

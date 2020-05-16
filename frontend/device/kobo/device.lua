@@ -1,9 +1,10 @@
 local Generic = require("device/generic/device")
-local TimeVal = require("ui/timeval")
 local Geom = require("ui/geometry")
+local TimeVal = require("ui/timeval")
+local WakeupMgr = require("device/wakeupmgr")
+local logger = require("logger")
 local util = require("ffi/util")
 local _ = require("gettext")
-local logger = require("logger")
 
 local function yes() return true end
 local function no() return false end
@@ -33,6 +34,9 @@ local Kobo = Generic:new{
     -- most Kobos have also mirrored X coordinates
     touch_mirrored_x = true,
     -- enforce portrait mode on Kobos
+    --- @note: In practice, the check that is used for in ffi/framebuffer is no longer relevant,
+    ---        since, in almost every case, we enforce a hardware Portrait rotation via fbdepth on startup by default ;).
+    ---        We still want to keep it in case an unfortunate soul on an older device disables the bitdepth switch...
     isAlwaysPortrait = yes,
     -- we don't need an extra refreshFull on resume, thank you very much.
     needsScreenRefreshAfterResume = no,
@@ -41,7 +45,7 @@ local Kobo = Generic:new{
     -- currently only the Aura One and Forma have coloured frontlights
     hasNaturalLight = no,
     hasNaturalLightMixer = no,
-    -- HW inversion is generally safe on Kobo, except on a few baords/kernels
+    -- HW inversion is generally safe on Kobo, except on a few boards/kernels
     canHWInvert = yes,
 }
 
@@ -233,6 +237,28 @@ local KoboFrost = Kobo:new{
     },
 }
 
+-- Kobo Libra:
+-- NOTE: Assume the same quirks as the Forma apply.
+local KoboStorm = Kobo:new{
+    model = "Kobo_storm",
+    hasFrontlight = yes,
+    hasKeys = yes,
+    canToggleGSensor = yes,
+    touch_snow_protocol = true,
+    misc_ntx_gsensor_protocol = true,
+    display_dpi = 300,
+    hasNaturalLight = yes,
+    frontlight_settings = {
+        frontlight_white = "/sys/class/backlight/mxc_msp430.0/brightness",
+        frontlight_mixer = "/sys/class/backlight/lm3630a_led/color",
+        -- Warmth goes from 0 to 10 on the device's side (our own internal scale is still normalized to [0...100])
+        -- NOTE: Those three extra keys are *MANDATORY* if frontlight_mixer is set!
+        nl_min = 0,
+        nl_max = 10,
+        nl_inverted = true,
+    },
+}
+
 -- This function will update itself after the first touch event
 local probeEvEpochTime
 probeEvEpochTime = function(self, ev)
@@ -313,6 +339,7 @@ function Kobo:init()
             end,
         }
     }
+    self.wakeup_mgr = WakeupMgr:new()
 
     Generic.init(self)
 
@@ -535,20 +562,34 @@ end
 
 local unexpected_wakeup_count = 0
 local function check_unexpected_wakeup()
-    logger.dbg("Kobo suspend: checking unexpected wakeup:",
-               unexpected_wakeup_count)
-    if unexpected_wakeup_count == 0 or unexpected_wakeup_count > 20 then
-        -- Don't put device back to sleep under the following two cases:
-        --   1. a resume event triggered Kobo:resume() function
-        --   2. trying to put device back to sleep more than 20 times after unexpected wakeup
-        return
-    end
-
-    logger.err("Kobo suspend: putting device back to sleep, unexpected wakeups:",
-               unexpected_wakeup_count)
+    local UIManager = require("ui/uimanager")
     -- just in case other events like SleepCoverClosed also scheduled a suspend
-    require("ui/uimanager"):unschedule(Kobo.suspend)
-    Kobo.suspend()
+    UIManager:unschedule(Kobo.suspend)
+
+    if WakeupMgr:isWakeupAlarmScheduled() and WakeupMgr:validateWakeupAlarmByProximity() then
+        logger.info("Kobo suspend: scheduled wakeup.")
+        local res = WakeupMgr:wakeupAction()
+        if not res then
+            logger.err("Kobo suspend: wakeup action failed.")
+        end
+        logger.info("Kobo suspend: putting device back to sleep.")
+        -- Most wakeup actions are linear, but we need some leeway for the
+        -- poweroff action to send out close events to all requisite widgets.
+        UIManager:scheduleIn(30, Kobo.suspend)
+    else
+        logger.dbg("Kobo suspend: checking unexpected wakeup:",
+                   unexpected_wakeup_count)
+        if unexpected_wakeup_count == 0 or unexpected_wakeup_count > 20 then
+            -- Don't put device back to sleep under the following two cases:
+            --   1. a resume event triggered Kobo:resume() function
+            --   2. trying to put device back to sleep more than 20 times after unexpected wakeup
+            return
+        end
+
+        logger.err("Kobo suspend: putting device back to sleep. Unexpected wakeups:",
+                   unexpected_wakeup_count)
+        Kobo.suspend()
+    end
 end
 
 function Kobo:getUnexpectedWakeup() return unexpected_wakeup_count end
@@ -683,7 +724,7 @@ function Kobo:suspend()
     -- expected wakeup, which gets checked in check_unexpected_wakeup().
     unexpected_wakeup_count = unexpected_wakeup_count + 1
     -- assuming Kobo:resume() will be called in 15 seconds
-    logger.dbg("Kobo suspend: scheduing unexpected wakeup guard")
+    logger.dbg("Kobo suspend: scheduling unexpected wakeup guard")
     UIManager:scheduleIn(15, check_unexpected_wakeup)
 end
 
@@ -777,6 +818,8 @@ elseif codename == "nova" then
     return KoboNova
 elseif codename == "frost" then
     return KoboFrost
+elseif codename == "storm" then
+    return KoboStorm
 else
     error("unrecognized Kobo model "..codename)
 end

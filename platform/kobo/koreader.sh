@@ -8,7 +8,7 @@ KOREADER_DIR="${0%/*}"
 cd "${KOREADER_DIR}" || exit
 
 # Attempt to switch to a sensible CPUFreq governor when that's not already the case...
-current_cpufreq_gov="$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
+IFS= read -r current_cpufreq_gov <"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 # NOTE: We're being fairly conservative here, because what's used and what's available varies depending on HW...
 if [ "${current_cpufreq_gov}" != "ondemand" ] && [ "${current_cpufreq_gov}" != "interactive" ]; then
     # NOTE: Go with ondemand, because it's likely to be the lowest common denominator.
@@ -49,6 +49,8 @@ ko_update_check() {
         fi
         rm -f "${NEWUPDATE}" # always purge newupdate in all cases to prevent update loop
         unset BLOCKS CPOINTS
+        # Ensure everything is flushed to disk before we restart. This *will* stall for a while on slow storage!
+        sync
     fi
 }
 # NOTE: Keep doing an initial update check, in addition to one during the restart loop, so we can pickup potential updates of this very script...
@@ -71,31 +73,42 @@ export STARDICT_DATA_DIR="data/dict"
 # export external font directory
 export EXT_FONT_DIR="/mnt/onboard/fonts"
 
-# fast and dirty way of check if we are called from nickel
-# through fmon/KFMon, or from another launcher (KSM or advboot)
-# Do not delete this line because KSM detects newer versions of KOReader by the presence of the phrase 'from_nickel'.
-export FROM_NICKEL="false"
+# Quick'n dirty way of checking if we were started while Nickel was running (e.g., KFMon),
+# or from another launcher entirely, outside of Nickel (e.g., KSM).
+VIA_NICKEL="false"
 if pkill -0 nickel; then
-    FROM_NICKEL="true"
+    VIA_NICKEL="true"
 fi
+# NOTE: Do not delete this line because KSM detects newer versions of KOReader by the presence of the phrase 'from_nickel'.
 
-if [ "${FROM_NICKEL}" = "true" ]; then
+if [ "${VIA_NICKEL}" = "true" ]; then
     # Detect if we were started from KFMon
     FROM_KFMON="false"
     if pkill -0 kfmon; then
         # That's a start, now check if KFMon truly is our parent...
-        if [ "$(pidof kfmon)" -eq "${PPID}" ]; then
+        if [ "$(pidof -s kfmon)" -eq "${PPID}" ]; then
             FROM_KFMON="true"
         fi
     fi
 
-    # Siphon a few things from nickel's env (namely, stuff exported by rcS *after* on-animator.sh has been launched)...
-    eval "$(xargs -n 1 -0 <"/proc/$(pidof nickel)/environ" | grep -e DBUS_SESSION_BUS_ADDRESS -e NICKEL_HOME -e WIFI_MODULE -e LANG -e WIFI_MODULE_PATH -e INTERFACE 2>/dev/null)"
-    export DBUS_SESSION_BUS_ADDRESS NICKEL_HOME WIFI_MODULE LANG WIFI_MODULE_PATH INTERFACE
+    # Check if Nickel is our parent...
+    FROM_NICKEL="false"
+    if [ -n "${NICKEL_HOME}" ]; then
+        FROM_NICKEL="true"
+    fi
 
-    # flush disks, might help avoid trashing nickel's DB...
+    # If we were spawned outside of Nickel, we'll need a few extra bits from its own env...
+    if [ "${FROM_NICKEL}" = "false" ]; then
+        # Siphon a few things from nickel's env (namely, stuff exported by rcS *after* on-animator.sh has been launched)...
+        # shellcheck disable=SC2046
+        export $(grep -s -E -e '^(DBUS_SESSION_BUS_ADDRESS|NICKEL_HOME|WIFI_MODULE|LANG|WIFI_MODULE_PATH|INTERFACE)=' "/proc/$(pidof -s nickel)/environ")
+        # NOTE: Quoted variant, w/ the busybox RS quirk (c.f., https://unix.stackexchange.com/a/125146):
+        #eval "$(awk -v 'RS="\0"' '/^(DBUS_SESSION_BUS_ADDRESS|NICKEL_HOME|WIFI_MODULE|LANG|WIFI_MODULE_PATH|INTERFACE)=/{gsub("\047", "\047\\\047\047"); print "export \047" $0 "\047"}' "/proc/$(pidof -s nickel)/environ")"
+    fi
+
+    # Flush disks, might help avoid trashing nickel's DB...
     sync
-    # stop kobo software because it's running
+    # And we can now stop the full Kobo software stack
     # NOTE: We don't need to kill KFMon, it's smart enough not to allow running anything else while we're up
     killall -TERM nickel hindenburg sickel fickel fmon 2>/dev/null
 fi
@@ -109,11 +122,21 @@ fi
 
 # check whether PLATFORM & PRODUCT have a value assigned by rcS
 if [ -z "${PRODUCT}" ]; then
+    # shellcheck disable=SC2046
+    export $(grep -s -e '^PRODUCT=' "/proc/$(pidof -s udevd)/environ")
+fi
+
+if [ -z "${PRODUCT}" ]; then
     PRODUCT="$(/bin/kobo_config.sh 2>/dev/null)"
     export PRODUCT
 fi
 
 # PLATFORM is used in koreader for the path to the WiFi drivers (as well as when restarting nickel)
+if [ -z "${PLATFORM}" ]; then
+    # shellcheck disable=SC2046
+    export $(grep -s -e '^PLATFORM=' "/proc/$(pidof -s udevd)/environ")
+fi
+
 if [ -z "${PLATFORM}" ]; then
     PLATFORM="freescale"
     if dd if="/dev/mmcblk0" bs=512 skip=1024 count=1 | grep -q "HW CONFIG"; then
@@ -137,7 +160,7 @@ fi
 
 # We'll want to ensure Portrait rotation to allow us to use faster blitting codepaths @ 8bpp,
 # so remember the current one before fbdepth does its thing.
-ORIG_FB_ROTA="$(cat /sys/class/graphics/fb0/rotate)"
+IFS= read -r ORIG_FB_ROTA <"/sys/class/graphics/fb0/rotate"
 echo "Original fb rotation is set @ ${ORIG_FB_ROTA}" >>crash.log 2>&1
 
 # In the same vein, swap to 8bpp,
@@ -148,10 +171,11 @@ echo "Original fb rotation is set @ ${ORIG_FB_ROTA}" >>crash.log 2>&1
 # NOTE: Even though both pickel & Nickel appear to restore their preferred fb setup, we'll have to do it ourselves,
 #       as they fail to flip the grayscale flag properly. Plus, we get to play nice with every launch method that way.
 #       So, remember the current bitdepth, so we can restore it on exit.
-ORIG_FB_BPP="$(./fbdepth -g)"
+IFS= read -r ORIG_FB_BPP <"/sys/class/graphics/fb0/bits_per_pixel"
 echo "Original fb bitdepth is set @ ${ORIG_FB_BPP}bpp" >>crash.log 2>&1
 # Sanity check...
 case "${ORIG_FB_BPP}" in
+    8) ;;
     16) ;;
     32) ;;
     *)
@@ -166,9 +190,9 @@ ko_do_fbdepth() {
     if grep -q '\["dev_startup_no_fbdepth"\] = true' 'settings.reader.lua' 2>/dev/null; then
         # Swap back to the original bitdepth (in case this was a restart)
         if [ -n "${ORIG_FB_BPP}" ]; then
-            # Unless we're a Forma, don't even bother to swap rotation if the fb is @ 16bpp, because RGB565 is terrible anyways,
+            # Unless we're a Forma/Libra, don't even bother to swap rotation if the fb is @ 16bpp, because RGB565 is terrible anyways,
             # so there's no faster codepath to achieve, and running in Portrait @ 16bpp might actually be broken on some setups...
-            if [ "${ORIG_FB_BPP}" -eq "16" ] && [ "${PRODUCT}" != "frost" ]; then
+            if [ "${ORIG_FB_BPP}" -eq "16" ] && [ "${PRODUCT}" != "frost" ] && [ "${PRODUCT}" != "storm" ]; then
                 echo "Making sure we're using the original fb bitdepth @ ${ORIG_FB_BPP}bpp & rotation @ ${ORIG_FB_ROTA}" >>crash.log 2>&1
                 ./fbdepth -d "${ORIG_FB_BPP}" -r "${ORIG_FB_ROTA}" >>crash.log 2>&1
             else
@@ -201,9 +225,9 @@ CRASH_TS=0
 CRASH_PREV_TS=0
 # Because we *want* an initial fbdepth pass ;).
 RETURN_VALUE=85
-while [ $RETURN_VALUE -ne 0 ]; do
+while [ ${RETURN_VALUE} -ne 0 ]; do
     # 85 is what we return when asking for a KOReader restart
-    if [ $RETURN_VALUE -eq 85 ]; then
+    if [ ${RETURN_VALUE} -eq 85 ]; then
         # Do an update check now, so we can actually update KOReader via the "Restart KOReader" menu entry ;).
         ko_update_check
         # Do or double-check the fb depth switch, or restore original bitdepth if requested
@@ -214,7 +238,7 @@ while [ $RETURN_VALUE -ne 0 ]; do
     RETURN_VALUE=$?
 
     # Did we crash?
-    if [ $RETURN_VALUE -ne 0 ] && [ $RETURN_VALUE -ne 85 ]; then
+    if [ ${RETURN_VALUE} -ne 0 ] && [ ${RETURN_VALUE} -ne 85 ]; then
         # Increment the crash counter
         CRASH_COUNT=$((CRASH_COUNT + 1))
         CRASH_TS=$(date +'%s')
@@ -239,8 +263,8 @@ while [ $RETURN_VALUE -ne 0 ]; do
         eval "$(./fbink -e | tr ';' '\n' | grep -e viewWidth -e viewHeight -e FONTH | tr '\n' ';')"
         # Compute margins & sizes relative to the screen's resolution, so we end up with a similar layout, no matter the device.
         # Height @ ~56.7%, w/ a margin worth 1.5 lines
-        bombHeight=$((viewHeight/2 + viewHeight/15))
-        bombMargin=$((FONTH + FONTH/2))
+        bombHeight=$((viewHeight / 2 + viewHeight / 15))
+        bombMargin=$((FONTH + FONTH / 2))
         # With a little notice at the top of the screen, on a big gray screen of death ;).
         ./fbink -q -b -c -B GRAY9 -m -y 1 "Don't Panic! (Crash n°${CRASH_COUNT} -> ${RETURN_VALUE})"
         if [ ${CRASH_COUNT} -eq 1 ]; then
@@ -253,14 +277,17 @@ while [ $RETURN_VALUE -ne 0 ]; do
         # And then print the tail end of the log on the bottom of the screen...
         crashLog="$(tail -n 25 crash.log | sed -e 's/\t/    /g')"
         # The idea for the margins being to leave enough room for an fbink -Z bar, small horizontal margins, and a font size based on what 6pt looked like @ 265dpi
-        ./fbink -q -b -O -t regular=./fonts/droid/DroidSansMono.ttf,top=$((viewHeight/2 + FONTH * 2 + FONTH/2)),left=$((viewWidth/60)),right=$((viewWidth/60)),px=$((viewHeight/64)) "${crashLog}"
+        ./fbink -q -b -O -t regular=./fonts/droid/DroidSansMono.ttf,top=$((viewHeight / 2 + FONTH * 2 + FONTH / 2)),left=$((viewWidth / 60)),right=$((viewWidth / 60)),px=$((viewHeight / 64)) "${crashLog}"
         # So far, we hadn't triggered an actual screen refresh, do that now, to make sure everything is bundled in a single flashing refresh.
-        ./fbink -q -f -s top=0,left=0
+        ./fbink -q -f -s
         # Cue a lemming's faceplant sound effect!
 
-        echo "!!!!" >>crash.log 2>&1
-        echo "Uh oh, something went awry... (Crash n°${CRASH_COUNT}: $(date +'%x @ %X'))" >>crash.log 2>&1
-        if [ $CRASH_COUNT -lt 5 ] && [ "${ALWAYS_ABORT}" = "false" ]; then
+        {
+            echo "!!!!"
+            echo "Uh oh, something went awry... (Crash n°${CRASH_COUNT}: $(date +'%x @ %X'))"
+            echo "Running FW $(cut -f3 -d',' /mnt/onboard/.kobo/version) on Linux $(uname -r) ($(uname -v))"
+        } >>crash.log 2>&1
+        if [ ${CRASH_COUNT} -lt 5 ] && [ "${ALWAYS_ABORT}" = "false" ]; then
             echo "Attempting to restart KOReader . . ." >>crash.log 2>&1
             echo "!!!!" >>crash.log 2>&1
         fi
@@ -277,7 +304,7 @@ while [ $RETURN_VALUE -ne 0 ]; do
 
         # But if we've crashed more than 5 consecutive times, exit, because we wouldn't want to be stuck in a loop...
         # NOTE: No need to check for ALWAYS_ABORT, CRASH_COUNT will always be 1 when it's true ;).
-        if [ $CRASH_COUNT -ge 5 ]; then
+        if [ ${CRASH_COUNT} -ge 5 ]; then
             echo "Too many consecutive crashes, aborting . . ." >>crash.log 2>&1
             echo "!!!! ! !!!!" >>crash.log 2>&1
             break
@@ -310,11 +337,9 @@ if [ -n "${ORIG_CPUFREQ_GOV}" ]; then
     echo "${ORIG_CPUFREQ_GOV}" >"/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"
 fi
 
-if [ "${FROM_NICKEL}" = "true" ]; then
-    if [ "${FROM_KFMON}" != "true" ]; then
-        # start kobo software because it was running before koreader
-        ./nickel.sh &
-    else
+if [ "${VIA_NICKEL}" = "true" ]; then
+    if [ "${FROM_KFMON}" = "true" ]; then
+        # KFMon is the only launcher that has a toggle to either reboot or restart Nickel on exit
         if grep -q "reboot_on_exit=false" "/mnt/onboard/.adds/kfmon/config/koreader.ini" 2>/dev/null; then
             # KFMon asked us to restart nickel on exit (default since KFMon 0.9.5)
             ./nickel.sh &
@@ -322,6 +347,9 @@ if [ "${FROM_NICKEL}" = "true" ]; then
             # KFMon asked us to restart the device on exit
             /sbin/reboot
         fi
+    else
+        # Otherwise, just restart Nickel
+        ./nickel.sh &
     fi
 else
     # if we were called from advboot then we must reboot to go to the menu
@@ -332,4 +360,4 @@ else
     fi
 fi
 
-exit $RETURN_VALUE
+exit ${RETURN_VALUE}

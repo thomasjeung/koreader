@@ -5,6 +5,7 @@ Displays a button that toggles between states. Used in bottom configuration pane
     local ToggleSwitch = require("ui/widget/toggleswitch")
 ]]
 
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local Device = require("device")
@@ -14,7 +15,6 @@ local GestureRange = require("ui/gesturerange")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local FrameContainer = require("ui/widget/container/framecontainer")
-local RenderText = require("ui/rendertext")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
 local UIManager = require("ui/uimanager")
@@ -27,10 +27,6 @@ local ToggleLabel = TextWidget:new{
     bgcolor = Blitbuffer.COLOR_WHITE,
     fgcolor = Blitbuffer.COLOR_BLACK,
 }
-
-function ToggleLabel:paintTo(bb, x, y)
-    RenderText:renderUtf8Text(bb, x, y+self._baseline_h, self.face, self.text, true, self.bold, self.fgcolor)
-end
 
 local ToggleSwitch = InputContainer:new{
     width = Screen:scaleBySize(216),
@@ -65,27 +61,35 @@ function ToggleSwitch:init()
     local item_padding = Size.padding.default -- only used to check if text truncate needed
     local item_border_size = Size.border.thin
     local frame_inner_width = self.width - 2*self.toggle_frame.padding - 2* self.toggle_frame.bordersize
-    local item_width = math.ceil(frame_inner_width / self.n_pos - 2*item_border_size)
-    local item_height = self.height / self.row_count
+    -- We'll need to adjust items width and distribute the accumulated fractional part to some
+    -- of them for proper visual alignment
+    local item_width_real = frame_inner_width / self.n_pos - 2*item_border_size
+    local item_width = math.floor(item_width_real)
+    local item_width_adjust = item_width_real - item_width
     -- Note: the height provided by ConfigDialog might be smaller than needed,
     -- it gets too thin if we account for padding & border
-    local center_dimen = Geom:new{
-        w = item_width,
-        h = item_height,
-    }
+    local item_height = self.height / self.row_count
+    local item_width_to_add = 0
     for i = 1, #self.toggle do
+        local real_item_width = item_width
+        item_width_to_add = item_width_to_add + item_width_adjust
+        if item_width_to_add >= 1 then
+            -- One pixel wider to better align the entire widget
+            real_item_width = item_width + math.floor(item_width_to_add)
+            item_width_to_add = item_width_to_add - math.floor(item_width_to_add)
+        end
         local text = self.toggle[i]
         local face = Font:getFace(self.font_face, self.font_size)
-        local txt_width = RenderText:sizeUtf8Text(0, Screen:getWidth(), face, text, true, true).x
-        if  txt_width > item_width - item_padding then
-            text = RenderText:truncateTextByWidth(text, face, item_width - item_padding, true, true)
-        end
         local label = ToggleLabel:new{
             text = text,
             face = face,
+            max_width = real_item_width - item_padding,
         }
         local content = CenterContainer:new{
-            dimen = center_dimen,
+            dimen = Geom:new{
+                w = real_item_width,
+                h = item_height,
+            },
             label,
         }
         local button = FrameContainer:new{
@@ -99,7 +103,6 @@ function ToggleSwitch:init()
         }
         table.insert(self.toggle_content[math.ceil(i / self.n_pos)], button)
     end
-
     self.toggle_frame[1] = self.toggle_content
     self[1] = self.toggle_frame
     self.dimen = Geom:new(self.toggle_frame:getSize())
@@ -147,7 +150,7 @@ function ToggleSwitch:setPosition(position)
     self:update()
 end
 
-function ToggleSwitch:togglePosition(position)
+function ToggleSwitch:togglePosition(position, update)
     if self.n_pos == 2 and self.alternate ~= false then
         self.position = (self.position+1)%self.n_pos
         self.position = self.position == 0 and self.n_pos or self.position
@@ -156,7 +159,9 @@ function ToggleSwitch:togglePosition(position)
     else
         self.position = position
     end
-    self:update()
+    if update then
+        self:update()
+    end
 end
 
 function ToggleSwitch:circlePosition()
@@ -169,6 +174,9 @@ end
 
 function ToggleSwitch:calculatePosition(gev)
     local x = (gev.pos.x - self.dimen.x) / self.dimen.w * self.n_pos
+    if BD.mirroredUILayout() then
+        x = self.n_pos - x
+    end
     local y = (gev.pos.y - self.dimen.y) / self.dimen.h * self.row_count
     return math.max(1, math.ceil(x)) + math.min(self.row_count-1, math.floor(y)) * self.n_pos
 end
@@ -183,7 +191,11 @@ function ToggleSwitch:onTapSelect(arg, gev)
     end
     if gev then
         local position = self:calculatePosition(gev)
-        self:togglePosition(position)
+        if self.toggle[position] ~= "⋮" then
+            self:togglePosition(position, true)
+        else
+            self:togglePosition(position, false)
+        end
     else
         self:circlePosition()
     end
@@ -201,16 +213,24 @@ function ToggleSwitch:onTapSelect(arg, gev)
         self.config:onConfigEvents(self.events, self.position)
     end
     --]]
-    self.config:onConfigChoose(self.values, self.name,
-                    self.event, self.args, self.events, self.position, self.delay_repaint)
-    UIManager:setDirty(self.config, function()
-        return "ui", self.dimen
-    end)
+    if self.callback then
+        self.callback(self.position)
+    end
+    if self.toggle[self.position] ~= "⋮" then
+        self.config:onConfigChoose(self.values, self.name,
+            self.event, self.args, self.events, self.position, self.delay_repaint)
+        UIManager:setDirty(self.config, function()
+            return "ui", self.dimen
+        end)
+    end
     return true
 end
 
 function ToggleSwitch:onHoldSelect(arg, gev)
     local position = self:calculatePosition(gev)
+    if self.toggle[position] == "⋮" then
+        return true
+    end
     if self.name == "font_fine_tune" then
         --- @note Ugly hack for the only widget that uses a dual toggle for fine-tuning (others prefer a buttonprogress)
         self.config:onMakeFineTuneDefault("font_size", _("Font Size"),

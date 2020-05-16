@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local CenterContainer = require("ui/widget/container/centercontainer")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -71,16 +72,7 @@ function ReaderMenu:init()
 end
 
 function ReaderMenu:getPreviousFile()
-    local previous_file = nil
-    local readhistory = require("readhistory")
-    for i=2, #readhistory.hist do -- skip first one which is current book
-        -- skip deleted items kept in history
-        if lfs.attributes(readhistory.hist[i].file, "mode") == "file" then
-            previous_file = readhistory.hist[i].file
-            break
-        end
-    end
-    return previous_file
+    return require("readhistory"):getPreviousFile(self.ui.document.file)
 end
 
 function ReaderMenu:onReaderReady()
@@ -168,15 +160,21 @@ function ReaderMenu:setUpdateItemTable()
                     self.ui.doc_settings:saveSetting("exclude_screensaver", true)
                 end
                 self.ui:saveSettings()
-            end
+            end,
+            added_by_readermenu_flag = true,
         }
-
+        local screensaver_sub_item_table = require("ui/elements/screensaver_menu")
+        -- Before inserting this new item, remove any previously added one
+        for i = #screensaver_sub_item_table, 1, -1 do
+            if screensaver_sub_item_table[i].added_by_readermenu_flag then
+                table.remove(screensaver_sub_item_table, i)
+            end
+        end
+        table.insert(screensaver_sub_item_table, ss_book_settings)
         self.menu_items.screensaver = {
             text = _("Screensaver"),
-            sub_item_table = require("ui/elements/screensaver_menu"),
+            sub_item_table = screensaver_sub_item_table,
         }
-        table.remove(self.menu_items.screensaver.sub_item_table, 9)
-        table.insert(self.menu_items.screensaver.sub_item_table, ss_book_settings)
     end
 
     local PluginLoader = require("pluginloader")
@@ -221,7 +219,7 @@ function ReaderMenu:setUpdateItemTable()
                 return _("Open previous document")
             end
             local path, file_name = util.splitFilePathName(previous_file) -- luacheck: no unused
-            return T(_("Previous: %1"), file_name)
+            return T(_("Previous: %1"), BD.filename(file_name))
         end,
         enabled_func = function()
             return self:getPreviousFile() ~= nil
@@ -232,7 +230,7 @@ function ReaderMenu:setUpdateItemTable()
         hold_callback = function()
             local previous_file = self:getPreviousFile()
             UIManager:show(ConfirmBox:new{
-                text = T(_("Would you like to open the previous document: %1?"), previous_file),
+                text = T(_("Would you like to open the previous document: %1?"), BD.filepath(previous_file)),
                 ok_text = _("OK"),
                 ok_callback = function()
                     self.ui:switchDocument(previous_file)
@@ -348,10 +346,14 @@ end
 
 function ReaderMenu:onCloseDocument()
     if Device:supportsScreensaver() then
-        -- Remove the 9th item we added (which cleans up references to document
+        -- Remove the item we added (which cleans up references to document
         -- and doc_settings embedded in functions)
         local screensaver_sub_item_table = require("ui/elements/screensaver_menu")
-        table.remove(screensaver_sub_item_table, 9)
+        for i = #screensaver_sub_item_table, 1, -1 do
+            if screensaver_sub_item_table[i].added_by_readermenu_flag then
+                table.remove(screensaver_sub_item_table, i)
+            end
+        end
     end
 end
 
@@ -363,10 +365,10 @@ function ReaderMenu:_getTabIndexFromLocation(ges)
         return self.last_tab_index
     -- if the start position is far right
     elseif ges.pos.x > 2 * Screen:getWidth() / 3 then
-        return #self.tab_item_table
+        return BD.mirroredUILayout() and 1 or #self.tab_item_table
     -- if the start position is far left
     elseif ges.pos.x < Screen:getWidth() / 3 then
-        return 1
+        return BD.mirroredUILayout() and #self.tab_item_table or 1
     -- if center return the last index
     else
         return self.last_tab_index

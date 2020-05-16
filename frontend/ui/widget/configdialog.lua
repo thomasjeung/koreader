@@ -18,7 +18,6 @@ local IconButton = require("ui/widget/iconbutton")
 local ImageWidget = require("ui/widget/imagewidget")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
-local RenderText = require("ui/rendertext")
 local RightContainer = require("ui/widget/container/rightcontainer")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
@@ -208,7 +207,11 @@ function ConfigOption:init()
             local face = Font:getFace(name_font_face, name_font_size)
             local txt_width = 0
             if text ~= nil then
-                txt_width = RenderText:sizeUtf8Text(0, Screen:getWidth(), face, text).x
+                local tmp = TextWidget:new{
+                    text = text,
+                    face = face,
+                }
+                txt_width = tmp:getWidth()
             end
             max_option_name_width = math.max(max_option_name_width, txt_width)
         end
@@ -262,22 +265,22 @@ function ConfigOption:init()
             if self.options[c].name_text then
                 -- the horizontal padding on the left will be ensured by the RightContainer
                 local name_widget_width = math.floor(name_align * Screen:getWidth())
-                local name_text_max_width = name_widget_width - default_option_hpadding - 2*padding_small
+                -- We don't remove default_option_hpadding from name_text_max_width
+                -- to give more to text and avoid truncation: as it is right aligned,
+                -- the text can grow on the left, padding_small is enough.
+                local name_text_max_width = name_widget_width - 2*padding_small
                 local text = self.options[c].name_text
                 local face = Font:getFace(name_font_face, name_font_size)
-                local width_name_text = RenderText:sizeUtf8Text(0, Screen:getWidth(), face, text).x
-                if width_name_text > name_text_max_width then
-                    text = RenderText:truncateTextByWidth(text, face, name_text_max_width)
-                end
-
                 local option_name_container = RightContainer:new{
                     dimen = Geom:new{ w = name_widget_width, h = option_height},
                 }
                 local option_name = Button:new{
                     text = text,
+                    max_width = name_text_max_width,
                     bordersize = 0,
                     face = face,
                     enabled = enabled,
+                    allow_hold_when_disabled = self.options[c].name_text_hold_callback ~= nil,
                     padding = padding_small,
                     text_font_face = name_font_face,
                     text_font_size = name_font_size,
@@ -353,6 +356,11 @@ function ConfigOption:init()
                             current_item = index
                         end
                     end
+                    -- If we want to have the ⋮ toggle selected when the value
+                    -- is different from the predefined values:
+                    -- if diff ~= 0 and self.options[c].alternate ~= false and self.options[c].more_options_param then
+                    --     current_item = #self.options[c].values + 1
+                    -- end
                 elseif self.options[c].args then
                     -- check if current arg is stored in configurable or calculated in runtime
                     local arg = self.options[c].current_func and self.options[c].current_func()
@@ -436,13 +444,10 @@ function ConfigOption:init()
                     else
                         local text = self.options[c].item_text[d]
                         local face = Font:getFace(item_font_face, item_font_size)
-                        local width_item_text = RenderText:sizeUtf8Text(0, Screen:getWidth(), face, text).x
-                        if max_item_text_width < width_item_text then
-                            text = RenderText:truncateTextByWidth(text, face, max_item_text_width)
-                        end
                         option_item = OptionTextItem:new{
                             TextWidget:new{
                                 text = text,
+                                max_width = max_item_text_width,
                                 face = face,
                                 fgcolor = enabled and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
                             },
@@ -512,6 +517,11 @@ function ConfigOption:init()
                 local row_count = self.options[c].row_count or 1
                 local toggle_height = Screen:scaleBySize(self.options[c].height
                                                          or 30 * row_count)
+                if self.options[c].more_options then
+                    table.insert(self.options[c].toggle, "⋮")
+                    table.insert(self.options[c].args, "⋮")
+                    self.options[c].more_options = false
+                end
                 local switch = ToggleSwitch:new{
                     width = math.min(max_toggle_width, toggle_width),
                     height = toggle_height,
@@ -529,6 +539,15 @@ function ConfigOption:init()
                     config = self.config,
                     enabled = enabled,
                     row_count = row_count,
+                    callback = function(arg)
+                        if self.options[c].toggle[arg] == "⋮" then
+                            if self.options[c].show_true_value_func and not self.options[c].more_options_param.show_true_value_func then
+                                self.options[c].more_options_param.show_true_value_func = self.options[c].show_true_value_func
+                            end
+                            self.config:onConfigMoreChoose(self.options[c].values, self.options[c].name,
+                                self.options[c].event, arg, self.options[c].name_text, self.options[c].delay_repaint, self.options[c].more_options_param)
+                        end
+                    end
                 }
                 local position = current_item
                 switch:setPosition(position)
@@ -548,12 +567,16 @@ function ConfigOption:init()
                     thin_grey_style = true,
                     font_face = item_font_face,
                     font_size = item_font_size,
+                    name = self.options[c].name,
                     num_buttons = #self.options[c].values,
                     position = self.options[c].default_pos,
                     callback = function(arg)
                         if arg == "-" or arg == "+" then
                             self.config:onConfigFineTuneChoose(self.options[c].values, self.options[c].name,
                                 self.options[c].event, self.options[c].args, self.options[c].events, arg, self.options[c].delay_repaint)
+                        elseif arg == "⋮" then
+                            self.config:onConfigMoreChoose(self.options[c].values, self.options[c].name,
+                                self.options[c].event, arg, self.options[c].name_text, self.options[c].delay_repaint, self.options[c].more_options_param)
                         else
                             self.config:onConfigChoose(self.options[c].values, self.options[c].name,
                                 self.options[c].event, self.options[c].args, self.options[c].events, arg, self.options[c].delay_repaint)
@@ -566,7 +589,7 @@ function ConfigOption:init()
                         if arg == "-" or arg == "+" then
                             self.config:onMakeFineTuneDefault(self.options[c].name, self.options[c].name_text, self.options[c].values,
                                 self.options[c].labels or self.options[c].args, arg)
-                        else
+                        elseif arg ~= "⋮" then
                             self.config:onMakeDefault(self.options[c].name, self.options[c].name_text, self.options[c].values,
                                 self.options[c].labels or self.options[c].args, arg)
                         end
@@ -574,6 +597,8 @@ function ConfigOption:init()
                     show_parrent = self.config,
                     enabled = enabled,
                     fine_tune = self.options[c].fine_tune,
+                    more_options = self.options[c].more_options,
+                    more_options_param = self.options[c].more_options_param,
                 }
                 switch:setPosition(current_item, default_item)
                 table.insert(option_items_group, switch)
@@ -595,16 +620,14 @@ end
 
 function ConfigOption:_itemGroupToLayoutLine(option_items_group)
     local layout_line  = {}
-    for k, v in pairs(option_items_group) do
-        --pad the beginning of the line in the layout to align it with the current selected tab
-        if type(k) == "number" then
-            layout_line[k + self.config.panel_index-1] = v
-        end
-    end
-    for k, v in pairs(layout_line) do
-        --remove item_spacing (all widget have the name property)
-        if not v.name then
-            table.remove(layout_line,k)
+    -- Insert items (skpping item_spacing without a .name attribute),
+    -- skipping indices at the beginning of the line in the layout
+    -- to align it with the current selected tab
+    local j = self.config.panel_index
+    for i, v in ipairs(option_items_group) do
+        if v.name then
+            layout_line[j] = v
+            j = j + 1
         end
     end
     return layout_line
@@ -849,10 +872,17 @@ end
 function ConfigDialog:onShowConfigPanel(index)
     self.panel_index = index
     local old_dimen = self.dialog_frame.dimen and self.dialog_frame.dimen:copy()
+    local old_layout_h = self.layout and #self.layout
     self:update()
     -- NOTE: Keep that one as UI to avoid delay when both this and the topmenu are shown.
     --       Plus, this is also called for each tab anyway, so that wouldn't have been great.
-    UIManager:setDirty(self.is_fresh and self or "all", function()
+    -- NOTE: And we also only need to repaint what's behind us when switching to a smaller dialog...
+    --       This is trickier than in touchmenu, because dimen appear to fluctuate before/after painting...
+    --       So we've settled instead for the amount of lines in the panel, as line-height is constant.
+    -- NOTE: line/widget-height is actually not constant (e.g. the font size widget on the emulator),
+    --       so do it only when the new nb of widgets is strictly greater than the previous one.
+    local keep_bg = old_layout_h and #self.layout > old_layout_h
+    UIManager:setDirty((self.is_fresh or keep_bg) and self or "all", function()
         local refresh_dimen =
             old_dimen and old_dimen:combine(self.dialog_frame.dimen)
             or self.dialog_frame.dimen
@@ -1023,6 +1053,216 @@ function ConfigDialog:onConfigFineTuneChoose(values, name, event, args, events, 
     end)
 end
 
+-- Tweaked variant used with the more options variant of buttonprogress and fine tune with numpicker
+-- events are not supported
+function ConfigDialog:onConfigMoreChoose(values, name, event, args, name_text, delay_repaint, more_options_param)
+    if not more_options_param then
+        more_options_param = {}
+    end
+    UIManager:tickAfterNext(function()
+        -- Repainting may be delayed depending on options
+        local refresh_dialog_func = function()
+            self.skip_paint = nil
+            if self.config_options.needs_redraw_on_change then
+                -- Some Kopt document event handlers just save their setting,
+                -- and need a full repaint for kopt to load these settings,
+                -- notice the change, and redraw the document
+                UIManager:setDirty("all", "partial")
+            else
+                -- CreDocument event handlers do their own refresh:
+                -- we can just redraw our frame
+                UIManager:setDirty(self, function()
+                    return "ui", self.dialog_frame.dimen
+                end)
+            end
+        end
+        local refresh_callback = nil
+        if type(delay_repaint) == "number" then -- timeout
+            UIManager:scheduleIn(delay_repaint, refresh_dialog_func)
+            self.skip_paint = true
+        elseif delay_repaint then -- anything but nil or false: provide a callback
+            -- This needs the config option to have an "event" key
+            -- The event handler is responsible for calling this callback when
+            -- it considers it appropriate
+            refresh_callback = refresh_dialog_func
+            self.skip_paint = true
+        end
+        if values and event then
+            if more_options_param.name then
+                name = more_options_param.name
+            end
+            if more_options_param.name_text then
+                name_text = more_options_param.name_text
+            end
+            if more_options_param.event then
+                event = more_options_param.event
+            end
+            local widget
+            if more_options_param.left_min then -- DoubleSpingWidget
+                local DoubleSpinWidget = require("ui/widget/doublespinwidget")
+                -- (No support for value_table - add it if needed)
+                local curr_values = self.configurable[name]
+                widget = DoubleSpinWidget:new{
+                    width = Screen:getWidth() * 0.6,
+                    left_text = more_options_param.left_text,
+                    right_text = more_options_param.right_text,
+                    left_value = curr_values[1],
+                    left_min = more_options_param.left_min,
+                    left_max = more_options_param.left_max,
+                    left_step = more_options_param.left_step,
+                    left_hold_step = more_options_param.left_hold_step,
+                    right_value = curr_values[2],
+                    right_min = more_options_param.right_min,
+                    right_max = more_options_param.right_max,
+                    right_step = more_options_param.right_step,
+                    right_hold_step = more_options_param.right_hold_step,
+                    title_text =  name_text or _("Set values"),
+                    info_text = more_options_param.info_text,
+                    keep_shown_on_apply = true,
+                    callback = function(left_value, right_value)
+                        if widget:hasMoved() and not self._dialog_closed then
+                            -- If it has been moved, assume the user wants more
+                            -- space and close bottom dialog
+                            self._dialog_closed = true
+                            self:closeDialog()
+                        end
+                        local value_tables = { left_value, right_value }
+                        self:onConfigChoice(name, value_tables)
+                        if event then
+                            args = args or {}
+                            self:onConfigEvent(event, value_tables, refresh_callback)
+                            self:update()
+                        end
+                    end,
+                    extra_text = _("Set as default"),
+                    extra_callback = function(left_value, right_value)
+                        local value_tables = { left_value, right_value }
+                        local values_string
+                        if more_options_param.show_true_value_func then
+                            values_string = more_options_param.show_true_value_func(value_tables)
+                        else
+                            values_string = T("%1, %2", left_value, right_value)
+                        end
+                        UIManager:show(ConfirmBox:new{
+                            text = T(_("Set default %1 to %2?"), (name_text or ""), values_string),
+                            ok_text = T(_("Set as default")),
+                            ok_callback = function()
+                                name = self.config_options.prefix.."_"..name
+                                G_reader_settings:saveSetting(name, value_tables)
+                                self:update()
+                                UIManager:setDirty(self, function()
+                                    return "ui", self.dialog_frame.dimen
+                                end)
+                            end,
+                        })
+
+                    end,
+                }
+            else -- SpinWidget with single value
+                local SpinWidget = require("ui/widget/spinwidget")
+                local value_hold_step = 0
+                if more_options_param.value_hold_step then
+                    value_hold_step = more_options_param.value_hold_step
+                elseif values and #values > 1 then
+                    value_hold_step = values[2] - values[1]
+                end
+                local curr_items = self.configurable[name]
+                local value_index = nil
+                if more_options_param.value_table then
+                    if more_options_param.args_table then
+                        for k,v in pairs(more_options_param.args_table) do
+                            if v == curr_items then
+                                value_index = k
+                                break
+                            end
+                        end
+                    else
+                        value_index = curr_items
+                    end
+                end
+                widget = SpinWidget:new{
+                    width = Screen:getWidth() * 0.6,
+                    value = curr_items,
+                    value_index = value_index,
+                    value_table = more_options_param.value_table,
+                    value_min = more_options_param.value_min or values[1],
+                    value_step = more_options_param.value_step or 1,
+                    value_hold_step = value_hold_step,
+                    value_max = more_options_param.value_max or values[#values],
+                    precision = more_options_param.precision or "%02d",
+                    keep_shown_on_apply = true,
+                    extra_text = _("Set as default"),
+                    extra_callback = function(spin)
+                        local value_string
+                        if more_options_param.show_true_value_func then
+                            value_string = more_options_param.show_true_value_func(spin.value)
+                        else
+                            value_string = spin.value
+                        end
+                        UIManager:show(ConfirmBox:new{
+                            text = T(_("Set default %1 to %2?"), (name_text or ""), value_string),
+                            ok_text = T(_("Set as default")),
+                            ok_callback = function()
+                                name = self.config_options.prefix.."_"..name
+                                if more_options_param.value_table then
+                                    if more_options_param.args_table then
+                                        G_reader_settings:saveSetting(name, more_options_param.args_table[spin.value_index])
+                                    else
+                                        G_reader_settings:saveSetting(name, spin.value_index)
+                                    end
+                                else
+                                    G_reader_settings:saveSetting(name, spin.value)
+                                end
+                                self:update()
+                                UIManager:setDirty(self, function()
+                                    return "ui", self.dialog_frame.dimen
+                                end)
+                            end,
+                        })
+
+                    end,
+                    title_text =  name_text or _("Set value"),
+                    info_text = more_options_param.info_text,
+                    callback = function(spin)
+                        if widget:hasMoved() and not self._dialog_closed then
+                            -- If it has been moved, assume the user wants more
+                            -- space and close bottom dialog
+                            self._dialog_closed = true
+                            self:closeDialog()
+                        end
+                        if more_options_param.value_table then
+                            if more_options_param.args_table then
+                                self:onConfigChoice(name, more_options_param.args_table[spin.value_index])
+                            else
+                                self:onConfigChoice(name, spin.value_index)
+                            end
+                        else
+                            self:onConfigChoice(name, spin.value)
+                        end
+                        if event then
+                            args = args or {}
+                            if more_options_param.value_table then
+                                if more_options_param.args_table then
+                                    self:onConfigEvent(event, more_options_param.args_table[spin.value_index], refresh_callback)
+                                else
+                                    self:onConfigEvent(event, spin.value_index, refresh_callback)
+                                end
+                            else
+                                self:onConfigEvent(event, spin.value, refresh_callback)
+                            end
+                            self:update()
+                        end
+                    end
+                }
+            end
+            UIManager:show(widget)
+        end
+        if not delay_repaint then -- immediate refresh
+            refresh_dialog_func()
+        end
+    end)
+end
+
 function ConfigDialog:onMakeDefault(name, name_text, values, labels, position)
     local display_value = labels[position]
     if name == "font_fine_tune" then
@@ -1047,7 +1287,7 @@ function ConfigDialog:onMakeDefault(name, name_text, values, labels, position)
             (name_text or ""),
             display_value
         ),
-        ok_text = T(_("Set default")),
+        ok_text = T(_("Set as default")),
         ok_callback = function()
             name = self.config_options.prefix.."_"..name
             G_reader_settings:saveSetting(name, values[position])
@@ -1085,7 +1325,7 @@ function ConfigDialog:onMakeFineTuneDefault(name, name_text, values, labels, dir
             (name_text or ""),
             display_value
         ),
-        ok_text = T(_("Set default")),
+        ok_text = T(_("Set as default")),
         ok_callback = function()
             name = self.config_options.prefix.."_"..name
             G_reader_settings:saveSetting(name, current_value)

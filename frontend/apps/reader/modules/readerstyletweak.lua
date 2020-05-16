@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local ButtonTable = require("ui/widget/buttontable")
 local CenterContainer = require("ui/widget/container/centercontainer")
@@ -97,6 +98,7 @@ function TweakInfoWidget:init()
             text = css,
             face = Font:getFace("infont", 16),
             width = self.width - 2*Size.padding.large,
+            para_direction_rtl = false, -- LTR
         }
     })
     if self.is_global_default then
@@ -310,7 +312,9 @@ end
 function ReaderStyleTweak:onReadSettings(config)
     self.enabled = not (config:readSetting("style_tweaks_enabled") == false)
     self.doc_tweaks = config:readSetting("style_tweaks") or {}
-    self.global_tweaks = G_reader_settings:readSetting("style_tweaks") or {}
+    -- Default globally enabled style tweaks (for new installations)
+    -- are defined in css_tweaks.lua
+    self.global_tweaks = G_reader_settings:readSetting("style_tweaks") or CssTweaks.DEFAULT_GLOBAL_STYLE_TWEAKS
     self:updateCssText()
 end
 
@@ -321,7 +325,7 @@ function ReaderStyleTweak:onSaveSettings()
         self.ui.doc_settings:saveSetting("style_tweaks_enabled", false)
     end
     self.ui.doc_settings:saveSetting("style_tweaks", util.tableSize(self.doc_tweaks) > 0 and self.doc_tweaks or nil)
-    G_reader_settings:saveSetting("style_tweaks", util.tableSize(self.global_tweaks) > 0 and self.global_tweaks or nil)
+    G_reader_settings:saveSetting("style_tweaks", self.global_tweaks)
 end
 
 function ReaderStyleTweak:init()
@@ -497,7 +501,7 @@ You can enable individual tweaks on this book with a tap, or view more details a
             table.insert(item_table, {
                 title = title,
                 id = file, -- keep ".css" in id, to distinguish between koreader/user tweaks
-                description = T(_("User style tweak at %1"), filepath),
+                description = T(_("User style tweak at %1"), BD.filepath(filepath)),
                 priority = 10, -- give user tweaks a higher priority
                 css_path = filepath,
             })

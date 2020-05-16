@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local DataStorage = require("datastorage")
 --local DownloadBackend = require("internaldownloadbackend")
 --local DownloadBackend = require("luahttpdownloadbackend")
@@ -24,7 +25,8 @@ local initialized = false
 local wifi_enabled_before_action = true
 local feed_config_file_name = "feed_config.lua"
 local news_downloader_config_file = "news_downloader_settings.lua"
-local config_key_custom_dl_dir = "custom_dl_dir";
+local news_downloader_settings
+local config_key_custom_dl_dir = "custom_dl_dir"
 local file_extension = ".epub"
 local news_download_dir_name = "news"
 local news_download_dir_path, feed_config_path
@@ -105,6 +107,19 @@ function NewsDownloader:addToMainMenu(menu_items)
                 callback = function() self:removeNewsButKeepFeedConfig() end,
             },
             {
+                text = _("Never download images"),
+                keep_menu_open = true,
+                checked_func = function()
+                    return news_downloader_settings:readSetting("never_download_images")
+                end,
+                callback = function()
+                    local never_download_images = news_downloader_settings:readSetting("never_download_images") or false
+                    logger.info("NewsDownloader: previous never_download_images: ", never_download_images)
+                    news_downloader_settings:saveSetting("never_download_images", not never_download_images)
+                    news_downloader_settings:flush()
+                end,
+            },
+            {
                 text = _("Settings"),
                 sub_item_table = {
                     {
@@ -125,7 +140,7 @@ function NewsDownloader:addToMainMenu(menu_items)
                 callback = function()
                     UIManager:show(InfoMessage:new{
                         text = T(_("News downloader retrieves RSS and Atom news entries and stores them to:\n%1\n\nEach entry is a separate html file, that can be browsed by KOReader file manager.\nItems download limit can be configured in Settings."),
-                                 news_download_dir_path)
+                                 BD.dirpath(news_download_dir_path))
                     })
                 end,
             },
@@ -136,7 +151,7 @@ end
 function NewsDownloader:lazyInitialization()
    if not initialized then
         logger.dbg("NewsDownloader: obtaining news folder")
-        local news_downloader_settings = LuaSettings:open(("%s/%s"):format(DataStorage:getSettingsDir(), news_downloader_config_file))
+        news_downloader_settings = LuaSettings:open(("%s/%s"):format(DataStorage:getSettingsDir(), news_downloader_config_file))
         if news_downloader_settings:has(config_key_custom_dl_dir) then
             news_download_dir_path = news_downloader_settings:readSetting(config_key_custom_dl_dir)
         else
@@ -174,6 +189,8 @@ function NewsDownloader:loadConfigAndProcessFeeds()
         return
     end
 
+    local never_download_images = news_downloader_settings:readSetting("never_download_images") or false
+
     local unsupported_feeds_urls = {}
 
     local total_feed_entries = table.getn(feed_config)
@@ -181,9 +198,9 @@ function NewsDownloader:loadConfigAndProcessFeeds()
         local url = feed[1]
         local limit = feed.limit
         local download_full_article = feed.download_full_article == nil or feed.download_full_article
-        local include_images = feed.include_images
+        local include_images = not never_download_images and feed.include_images
         if url and limit then
-            local feed_message = T(_("Processing %1/%2:\n%3"), idx, total_feed_entries, url)
+            local feed_message = T(_("Processing %1/%2:\n%3"), idx, total_feed_entries, BD.url(url))
             UI:info(feed_message)
             NewsDownloader:processFeedSource(url, tonumber(limit), unsupported_feeds_urls, download_full_article, include_images, feed_message)
         else
@@ -198,7 +215,7 @@ function NewsDownloader:loadConfigAndProcessFeeds()
         for k,url in pairs(unsupported_feeds_urls) do
             unsupported_urls = unsupported_urls .. url
             if k ~= #unsupported_feeds_urls then
-                unsupported_urls = unsupported_urls .. ", "
+                unsupported_urls = BD.url(unsupported_urls) .. ", "
             end
         end
         UI:info(T(_("Downloading news finished. Could not process some feeds. Unsupported format in: %1"), unsupported_urls))
@@ -389,7 +406,6 @@ function NewsDownloader:setCustomDownloadDirectory()
     require("ui/downloadmgr"):new{
        onConfirm = function(path)
            logger.dbg("NewsDownloader: set download directory to: ", path)
-           local news_downloader_settings = LuaSettings:open(("%s/%s"):format(DataStorage:getSettingsDir(), news_downloader_config_file))
            news_downloader_settings:saveSetting(config_key_custom_dl_dir, ("%s/"):format(path))
            news_downloader_settings:flush()
 
@@ -408,9 +424,10 @@ function NewsDownloader:changeFeedConfig()
     feed_config_file:close()
     local config_editor
     config_editor = InputDialog:new{
-        title = T(_("Config: %1"),feed_config_path),
+        title = T(_("Config: %1"), BD.filepath(feed_config_path)),
         input = config,
         input_type = "string",
+        para_direction_rtl = false, -- force LTR
         fullscreen = true,
         condensed = true,
         allow_newline = true,

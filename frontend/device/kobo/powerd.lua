@@ -126,8 +126,16 @@ function KoboPowerD:init()
                 end
             end
             -- Does this device's NaturalLight use a custom scale?
-            self.fl_warmth_min = self.device.frontlight_settings["nl_min"] or self.fl_warmth_min
-            self.fl_warmth_max = self.device.frontlight_settings["nl_max"] or self.fl_warmth_max
+            self.fl_warmth_min = self.device.frontlight_settings.nl_min or self.fl_warmth_min
+            self.fl_warmth_max = self.device.frontlight_settings.nl_max or self.fl_warmth_max
+            -- If this device has a mixer, we can use the ioctl for brightness control, as it's much lower latency.
+            if self.device:hasNaturalLightMixer() then
+                local kobolight = require("ffi/kobolight")
+                local ok, light = pcall(kobolight.open)
+                if ok then
+                    self.device.frontlight_settings.frontlight_ioctl = light
+                end
+            end
             self.fl = SysfsLight:new(self.device.frontlight_settings)
             self.fl_warmth = 0
             self:_syncKoboLightOnStart()
@@ -168,7 +176,7 @@ function KoboPowerD:saveSettings()
         local cur_intensity = self.fl_intensity
         -- If we're shutting down straight from suspend then the frontlight won't
         -- be turned on but we still want to save its state.
-        local cur_is_fl_on = self.is_fl_on or self.fl_was_on
+        local cur_is_fl_on = self.is_fl_on or self.fl_was_on or false
         local cur_warmth = self.fl_warmth
         local cur_auto_warmth = self.auto_warmth
         local cur_max_warmth_hour = self.max_warmth_hour
@@ -224,9 +232,11 @@ end
 
 function KoboPowerD:setIntensityHW(intensity)
     if self.fl == nil then return end
-    if self.fl_warmth == nil then
+    if self.fl_warmth == nil or self.device:hasNaturalLightMixer() then
+        -- We either don't have NL, or we have a mixer: we only want to set the intensity (c.f., #5429)
         self.fl:setBrightness(intensity)
     else
+        -- Not having a mixer sucks, we always have to set intensity combined w/ warmth (#5465)
         self.fl:setNaturalBrightness(intensity, self.fl_warmth)
     end
     self.hw_intensity = intensity
@@ -313,7 +323,8 @@ function KoboPowerD:turnOffFrontlightHW()
     util.runInSubProcess(function()
         for i = 1,5 do
             self:_setIntensity(math.floor(self.fl_intensity - ((self.fl_intensity / 5) * i)))
-            -- NOTE: We generally don't need to sleep when using sysfs as a backend...
+            --- @note: Newer devices appear to block slightly longer on FL ioctls/sysfs, so only sleep on older devices,
+            ---        otherwise we get a jump and not a ramp ;).
             if not self.device:hasNaturalLight() then
                 if (i < 5) then
                     util.usleep(35 * 1000)
@@ -351,6 +362,8 @@ function KoboPowerD:turnOnFrontlightHW()
     util.runInSubProcess(function()
         for i = 1,5 do
             self:_setIntensity(math.ceil(self.fl_min + ((self.fl_intensity / 5) * i)))
+            --- @note: Newer devices appear to block slightly longer on FL ioctls/sysfs, so only sleep on older devices,
+            ---        otherwise we get a jump and not a ramp ;).
             if not self.device:hasNaturalLight() then
                 if (i < 5) then
                     util.usleep(35 * 1000)

@@ -3,6 +3,8 @@ local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local _ = require("gettext")
 local BookInfoManager = require("bookinfomanager")
+local Screen = require("device").screen
+local T = require("ffi/util").template
 
 --[[
     This plugin provides additional display modes to file browsers (File Manager
@@ -22,6 +24,9 @@ local _FileChooser_onCloseWidget_orig = FileChooser.onCloseWidget
 local FileManagerHistory = require("apps/filemanager/filemanagerhistory")
 local _FileManagerHistory_updateItemTable_orig = FileManagerHistory.updateItemTable
 
+local FileManagerCollection = require("apps/filemanager/filemanagercollection")
+local _FileManagerCollection_updateItemTable_orig = FileManagerCollection.updateItemTable
+
 local FileManager = require("apps/filemanager/filemanager")
 local _FileManager_tapPlus_orig = FileManager.tapPlus
 
@@ -39,6 +44,8 @@ local DISPLAY_MODES = {
 local init_done = false
 local filemanager_display_mode = false -- not initialized yet
 local history_display_mode = false -- not initialized yet
+local collection_display_mode = false -- not initialized yet
+local series_mode = nil -- defaults to not display series
 
 local CoverBrowser = InputContainer:new{
     name = "coverbrowser",
@@ -73,6 +80,9 @@ function CoverBrowser:init()
 
     self:setupFileManagerDisplayMode(BookInfoManager:getSetting("filemanager_display_mode"))
     self:setupHistoryDisplayMode(BookInfoManager:getSetting("history_display_mode"))
+    self:setupCollectionDisplayMode(BookInfoManager:getSetting("collection_display_mode"))
+    series_mode = BookInfoManager:getSetting("series_mode")
+
     init_done = true
     BookInfoManager:closeDbConnection() -- will be re-opened if needed
 end
@@ -96,7 +106,7 @@ function CoverBrowser:addToMainMenu(menu_items)
                 end
                 if self.full_featured then
                     -- Inform that this settings applies only to classic file chooser
-                    current_state = _("(Classic mode) ") .. current_state
+                    current_state = T(_("(Classic mode) %1"), current_state)
                 end
                 return current_state
             end,
@@ -132,16 +142,13 @@ function CoverBrowser:addToMainMenu(menu_items)
             separator = true,
         },
         {
-            text = _("Shorten home directory to ~"),
-            checked_func = function() return G_reader_settings:readSetting("home_dir_display_name") end,
+            text = _("Shorten home directory"),
+            checked_func = function()
+                return G_reader_settings:nilOrTrue("shorten_home_dir")
+            end,
             callback = function()
-                if G_reader_settings:readSetting("home_dir_display_name") then
-                    G_reader_settings:delSetting("home_dir_display_name")
-                    if FileManager.instance then FileManager.instance:reinit() end
-                else
-                    G_reader_settings:saveSetting("home_dir_display_name", "~")
-                    if FileManager.instance then FileManager.instance:reinit() end
-                end
+                G_reader_settings:flipNilOrTrue("shorten_home_dir")
+                if FileManager.instance then FileManager.instance:reinit() end
             end,
         },
         {
@@ -264,6 +271,54 @@ function CoverBrowser:addToMainMenu(menu_items)
                         separator = true,
                     },
                 },
+            },
+            {
+                text = _("Favorites display mode"),
+                sub_item_table = {
+                    {
+                        text = _("Classic (filename only)"),
+                        checked_func = function() return not collection_display_mode end,
+                        callback = function()
+                            self:setupCollectionDisplayMode("")
+                        end,
+                    },
+                    {
+                        text = _("Mosaic with cover images"),
+                        checked_func = function() return collection_display_mode == "mosaic_image" end,
+                        callback = function()
+                            self:setupCollectionDisplayMode("mosaic_image")
+                        end,
+                    },
+                    {
+                        text = _("Mosaic with text covers"),
+                        checked_func = function() return collection_display_mode == "mosaic_text" end,
+                        callback = function()
+                            self:setupCollectionDisplayMode("mosaic_text")
+                        end,
+                    },
+                    {
+                        text = _("Detailed list with cover images and metadata"),
+                        checked_func = function() return collection_display_mode == "list_image_meta" end,
+                        callback = function()
+                            self:setupCollectionDisplayMode("list_image_meta")
+                        end,
+                    },
+                    {
+                        text = _("Detailed list with metadata, no images"),
+                        checked_func = function() return collection_display_mode == "list_only_meta" end,
+                        callback = function()
+                            self:setupCollectionDisplayMode("list_only_meta")
+                        end,
+                    },
+                    {
+                        text = _("Detailed list with cover images and filenames"),
+                        checked_func = function() return collection_display_mode == "list_image_filename" end,
+                        callback = function()
+                            self:setupCollectionDisplayMode("list_image_filename")
+                        end,
+                        separator = true,
+                    },
+                },
                 separator = true,
             },
             -- Misc settings
@@ -271,27 +326,114 @@ function CoverBrowser:addToMainMenu(menu_items)
                 text = _("Other settings"),
                 sub_item_table = {
                     {
-                        text = _("Show hint for books with description"),
-                        checked_func = function() return not BookInfoManager:getSetting("no_hint_description") end,
-                        callback = function()
-                            if BookInfoManager:getSetting("no_hint_description") then
-                                BookInfoManager:saveSetting("no_hint_description", false)
-                            else
-                                BookInfoManager:saveSetting("no_hint_description", true)
-                            end
-                            self:refreshFileManagerInstance()
-                        end,
+                        text = _("Display hints"),
+                        sub_item_table = {
+                            {
+                                text = _("Show hint for books with description"),
+                                checked_func = function() return not BookInfoManager:getSetting("no_hint_description") end,
+                                callback = function()
+                                    if BookInfoManager:getSetting("no_hint_description") then
+                                        BookInfoManager:saveSetting("no_hint_description", false)
+                                    else
+                                        BookInfoManager:saveSetting("no_hint_description", true)
+                                    end
+                                    self:refreshFileManagerInstance()
+                                end,
+                            },
+                            {
+                                text = _("Show hint for opened books in history"),
+                                checked_func = function() return BookInfoManager:getSetting("history_hint_opened") end,
+                                callback = function()
+                                    if BookInfoManager:getSetting("history_hint_opened") then
+                                        BookInfoManager:saveSetting("history_hint_opened", false)
+                                    else
+                                        BookInfoManager:saveSetting("history_hint_opened", true)
+                                    end
+                                    self:refreshFileManagerInstance()
+                                end,
+                            },
+                            {
+                                text = _("Show hint for opened books in favorites"),
+                                checked_func = function() return BookInfoManager:getSetting("collections_hint_opened") end,
+                                callback = function()
+                                    if BookInfoManager:getSetting("collections_hint_opened") then
+                                        BookInfoManager:saveSetting("collections_hint_opened", false)
+                                    else
+                                        BookInfoManager:saveSetting("collections_hint_opened", true)
+                                    end
+                                    self:refreshFileManagerInstance()
+                                end,
+                            }
+                        }
                     },
                     {
-                        text = _("Show hint for opened books in history"),
-                        checked_func = function() return BookInfoManager:getSetting("history_hint_opened") end,
+                        text = _("Series"),
+                        sub_item_table = {
+                            {
+                                text = _("Append series metadata to authors"),
+                                checked_func = function() return series_mode == "append_series_to_authors" end,
+                                callback = function()
+                                    if series_mode == "append_series_to_authors" then
+                                        series_mode = nil
+                                    else
+                                        series_mode = "append_series_to_authors"
+                                    end
+                                    BookInfoManager:saveSetting("series_mode", series_mode)
+                                    self:refreshFileManagerInstance()
+                                end,
+                            },
+                            {
+                                text = _("Append series metadata to title"),
+                                checked_func = function() return series_mode == "append_series_to_title" end,
+                                callback = function()
+                                    if series_mode == "append_series_to_title" then
+                                        series_mode = nil
+                                    else
+                                        series_mode = "append_series_to_title"
+                                    end
+                                    BookInfoManager:saveSetting("series_mode", series_mode)
+                                    self:refreshFileManagerInstance()
+                                end,
+                            },
+                            {
+                                text = _("Show series metadata in separate line"),
+                                checked_func = function() return series_mode == "series_in_separate_line" end,
+                                callback = function()
+                                    if series_mode == "series_in_separate_line" then
+                                        series_mode = nil
+                                    else
+                                        series_mode = "series_in_separate_line"
+                                    end
+                                    BookInfoManager:saveSetting("series_mode", series_mode)
+                                    self:refreshFileManagerInstance()
+                                end,
+                            },
+                        },
+                        separator = true
+                    },
+                    {
+                        text = _("(Detailed list) Files per page"),
+                        help_text = _([[This sets the number of files and directories per page in non-'classic' display modes.]]),
+                        -- Best to not "keep_menu_open = true", to see how this apply on the full view
                         callback = function()
-                            if BookInfoManager:getSetting("history_hint_opened") then
-                                BookInfoManager:saveSetting("history_hint_opened", false)
-                            else
-                                BookInfoManager:saveSetting("history_hint_opened", true)
-                            end
-                            self:refreshFileManagerInstance()
+                            local SpinWidget = require("ui/widget/spinwidget")
+                            -- "files_per_page" should have been saved with an adequate value
+                            -- the first time Detailed list was shown. Fallback to a start
+                            -- value of 10 if it hasn't.
+                            local curr_items = BookInfoManager:getSetting("files_per_page") or 10
+                            local items = SpinWidget:new{
+                                width = Screen:getWidth() * 0.6,
+                                value = curr_items,
+                                value_min = 4,
+                                value_max = 20,
+                                keep_shown_on_apply = true,
+                                title_text =  _("Files per page"),
+                                callback = function(spin)
+                                    BookInfoManager:saveSetting("files_per_page", spin.value)
+                                    self.ui:onRefresh()
+                                end
+                            }
+                            UIManager:show(items)
                         end,
                     },
                     {
@@ -317,30 +459,7 @@ function CoverBrowser:addToMainMenu(menu_items)
                             end
                             self:refreshFileManagerInstance()
                         end,
-                    },
-                    {
-                        text = _("Append series metadata to authors"),
-                        checked_func = function() return BookInfoManager:getSetting("append_series_to_authors") end,
-                        callback = function()
-                            if BookInfoManager:getSetting("append_series_to_authors") then
-                                BookInfoManager:saveSetting("append_series_to_authors", false)
-                            else
-                                BookInfoManager:saveSetting("append_series_to_authors", true)
-                            end
-                            self:refreshFileManagerInstance()
-                        end,
-                    },
-                    {
-                        text = _("Append series metadata to title"),
-                        checked_func = function() return BookInfoManager:getSetting("append_series_to_title") end,
-                        callback = function()
-                            if BookInfoManager:getSetting("append_series_to_title") then
-                                BookInfoManager:saveSetting("append_series_to_title", false)
-                            else
-                                BookInfoManager:saveSetting("append_series_to_title", true)
-                            end
-                            self:refreshFileManagerInstance()
-                        end,
+                        separator = true
                     },
                     -- generic_items will be inserted here
                 },
@@ -484,6 +603,7 @@ function CoverBrowser:setupFileManagerDisplayMode(display_mode)
         FileChooser._do_cover_images = nil
         FileChooser._do_filename_only = nil
         FileChooser._do_hint_opened = nil
+        FileChooser._do_center_partial_rows = nil
         self:refreshFileManagerInstance(true)
         return
     end
@@ -502,6 +622,8 @@ function CoverBrowser:setupFileManagerDisplayMode(display_mode)
         -- Set MosaicMenu behaviour:
         FileChooser._do_cover_images = display_mode ~= "mosaic_text"
         FileChooser._do_hint_opened = true -- dogear at bottom
+        -- Don't have "../" centered in empty directories
+        FileChooser._do_center_partial_rows = false
         -- One could override default 3x3 grid here (put that as settings ?)
         -- FileChooser.nb_cols_portrait = 4
         -- FileChooser.nb_rows_portrait = 4
@@ -519,6 +641,7 @@ function CoverBrowser:setupFileManagerDisplayMode(display_mode)
         FileChooser._do_filename_only = display_mode == "list_image_filename"
         FileChooser._do_hint_opened = true -- dogear at bottom
     end
+
 
     -- Replace this FileManager method with the one from CoverMenu
     -- (but first, make the original method saved here as local available
@@ -566,7 +689,7 @@ local function _FileManagerHistory_updateItemTable(self)
             hist_menu._updateItemsBuildUI = MosaicMenu._updateItemsBuildUI
             -- Set MosaicMenu behaviour:
             hist_menu._do_cover_images = display_mode ~= "mosaic_text"
-            -- no need for do_hint_opened with History
+            hist_menu._do_center_partial_rows = true -- nicer looking when few elements
 
         elseif display_mode == "list_image_meta" or display_mode == "list_only_meta" or
                                  display_mode == "list_image_filename" then -- list modes
@@ -577,7 +700,6 @@ local function _FileManagerHistory_updateItemTable(self)
             -- Set ListMenu behaviour:
             hist_menu._do_cover_images = display_mode ~= "list_only_meta"
             hist_menu._do_filename_only = display_mode == "list_image_filename"
-            -- no need for do_hint_opened with History
 
         end
         hist_menu._do_hint_opened = BookInfoManager:getSetting("history_hint_opened")
@@ -615,6 +737,85 @@ function CoverBrowser:setupHistoryDisplayMode(display_mode)
         FileManagerHistory.updateItemTable = _FileManagerHistory_updateItemTable
         -- And let it know which display_mode we should use
         FileManagerHistory.display_mode = display_mode
+    end
+end
+
+local function _FileManagerCollections_updateItemTable(self)
+    -- 'self' here is the single FileManagerCollections instance
+    -- FileManagerCollections has just created a new instance of Menu as 'coll_menu'
+    -- at each display of Collection/Favorites. Soon after instantiation, this method
+    -- is called. The first time it is called, we replace some methods.
+    local display_mode = self.display_mode
+    local coll_menu = self.coll_menu
+
+    if not coll_menu._coverbrowser_overridden then
+        coll_menu._coverbrowser_overridden = true
+
+        -- In both mosaic and list modes, replace original methods with those from
+        -- our generic CoverMenu
+        local CoverMenu = require("covermenu")
+        coll_menu.updateItems = CoverMenu.updateItems
+        coll_menu.onCloseWidget = CoverMenu.onCloseWidget
+        -- Also replace original onMenuHold (it will use original method, so remember it)
+        coll_menu.onMenuHold_orig = coll_menu.onMenuHold
+        coll_menu.onMenuHold = CoverMenu.onCollectionsMenuHold
+
+        if display_mode == "mosaic_image" or display_mode == "mosaic_text" then -- mosaic mode
+            -- Replace some other original methods with those from our MosaicMenu
+            local MosaicMenu = require("mosaicmenu")
+            coll_menu._recalculateDimen = MosaicMenu._recalculateDimen
+            coll_menu._updateItemsBuildUI = MosaicMenu._updateItemsBuildUI
+            -- Set MosaicMenu behaviour:
+            coll_menu._do_cover_images = display_mode ~= "mosaic_text"
+            coll_menu._do_center_partial_rows = true -- nicer looking when few elements
+
+        elseif display_mode == "list_image_meta" or display_mode == "list_only_meta" or
+            display_mode == "list_image_filename" then -- list modes
+            -- Replace some other original methods with those from our ListMenu
+            local ListMenu = require("listmenu")
+            coll_menu._recalculateDimen = ListMenu._recalculateDimen
+            coll_menu._updateItemsBuildUI = ListMenu._updateItemsBuildUI
+            -- Set ListMenu behaviour:
+            coll_menu._do_cover_images = display_mode ~= "list_only_meta"
+            coll_menu._do_filename_only = display_mode == "list_image_filename"
+
+        end
+        coll_menu._do_hint_opened = BookInfoManager:getSetting("collections_hint_opened")
+    end
+
+    -- And do now what the original does
+    _FileManagerCollection_updateItemTable_orig(self)
+end
+
+
+function CoverBrowser:setupCollectionDisplayMode(display_mode)
+    if not DISPLAY_MODES[display_mode] then
+        display_mode = nil -- unknow mode, fallback to classic
+    end
+    if init_done and display_mode == collection_display_mode then -- no change
+        return
+    end
+    if init_done then -- save new mode in db
+        BookInfoManager:saveSetting("collection_display_mode", display_mode)
+    end
+    -- remember current mode in module variable
+    collection_display_mode = display_mode
+    logger.dbg("CoverBrowser: setting Collection display mode to:", display_mode or "classic")
+
+    if not init_done and not display_mode then
+        return -- starting in classic mode, nothing to patch
+    end
+
+    -- We only need to replace one FileManagerCollection method
+    if not display_mode then -- classic mode
+        -- Put back original methods
+        FileManagerCollection.updateItemTable = _FileManagerCollection_updateItemTable_orig
+        FileManagerCollection.display_mode = nil
+    else
+        -- Replace original method with the one defined above
+        FileManagerCollection.updateItemTable = _FileManagerCollections_updateItemTable
+        -- And let it know which display_mode we should use
+        FileManagerCollection.display_mode = display_mode
     end
 end
 

@@ -1,11 +1,13 @@
 local DateWidget = require("ui/widget/datewidget")
 local Device = require("device")
+local Event = require("ui/event")
 local InfoMessage = require("ui/widget/infomessage")
 local Language = require("ui/language")
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
 local TimeWidget = require("ui/widget/timewidget")
 local _ = require("gettext")
+local N_ = _.ngettext
 local Screen = Device.screen
 local T = require("ffi/util").template
 
@@ -50,73 +52,84 @@ if Device:canToggleMassStorage() then
     }
 end
 
-if Device:setDateTime() then
-    common_settings.time = {
-        text = _("Time and date"),
-        sub_item_table = {
-            {
-                text = _("Set time"),
-                keep_menu_open = true,
-                callback = function()
-                    local now_t = os.date("*t")
-                    local curr_hour = now_t.hour
-                    local curr_min = now_t.min
-                    local time_widget = TimeWidget:new{
-                        hour = curr_hour,
-                        min = curr_min,
-                        ok_text = _("Set time"),
-                        title_text = _("Set time"),
-                        callback = function(time)
-                            if Device:setDateTime(nil, nil, nil, time.hour, time.min) then
-                                now_t = os.date("*t")
-                                UIManager:show(InfoMessage:new{
-                                    text = T(_("Current time: %1:%2"), string.format("%02d", now_t.hour),
-                                        string.format("%02d", now_t.min))
-                                })
-                            else
-                                UIManager:show(InfoMessage:new{
-                                    text = _("Time couldn't be set"),
-                                })
-                            end
-                        end
-                    }
-                    UIManager:show(time_widget)
-                end,
-            },
-            {
-                text = _("Set date"),
-                keep_menu_open = true,
-                callback = function()
-                    local now_t = os.date("*t")
-                    local curr_year = now_t.year
-                    local curr_month = now_t.month
-                    local curr_day = now_t.day
-                    local date_widget = DateWidget:new{
-                        year = curr_year,
-                        month = curr_month,
-                        day = curr_day,
-                        ok_text = _("Set date"),
-                        title_text = _("Set date"),
-                        callback = function(time)
-                            now_t = os.date("*t")
-                            if Device:setDateTime(time.year, time.month, time.day, now_t.hour, now_t.min, now_t.sec) then
-                                now_t = os.date("*t")
-                                UIManager:show(InfoMessage:new{
-                                    text = T(_("Current date: %1-%2-%3"), now_t.year, string.format("%02d", now_t.month),
-                                        string.format("%02d", now_t.day))
-                                })
-                            else
-                                UIManager:show(InfoMessage:new{
-                                    text = _("Date couldn't be set"),
-                                })
-                            end
-                        end
-                    }
-                    UIManager:show(date_widget)
-                end,
-            }
+-- This affects the topmenu, we want to be able to access it even if !Device:setDateTime()
+common_settings.time = {
+    text = _("Time and date"),
+    sub_item_table = {
+        {
+        text = _("12-hour clock"),
+        keep_menu_open = true,
+        checked_func = function()
+            return G_reader_settings:nilOrTrue("twelve_hour_clock")
+        end,
+        callback = function()
+            G_reader_settings:flipNilOrTrue("twelve_hour_clock")
+        end,
         }
     }
+}
+if Device:setDateTime() then
+    table.insert(common_settings.time.sub_item_table, {
+        text = _("Set time"),
+        keep_menu_open = true,
+        callback = function()
+            local now_t = os.date("*t")
+            local curr_hour = now_t.hour
+            local curr_min = now_t.min
+            local time_widget = TimeWidget:new{
+                hour = curr_hour,
+                min = curr_min,
+                ok_text = _("Set time"),
+                title_text = _("Set time"),
+                callback = function(time)
+                    if Device:setDateTime(nil, nil, nil, time.hour, time.min) then
+                        now_t = os.date("*t")
+                        UIManager:show(InfoMessage:new{
+                            text = T(_("Current time: %1:%2"), string.format("%02d", now_t.hour),
+                                string.format("%02d", now_t.min))
+                        })
+                    else
+                        UIManager:show(InfoMessage:new{
+                            text = _("Time couldn't be set"),
+                        })
+                    end
+                end
+            }
+            UIManager:show(time_widget)
+        end,
+    })
+    table.insert(common_settings.time.sub_item_table, {
+        text = _("Set date"),
+        keep_menu_open = true,
+        callback = function()
+            local now_t = os.date("*t")
+            local curr_year = now_t.year
+            local curr_month = now_t.month
+            local curr_day = now_t.day
+            local date_widget = DateWidget:new{
+                year = curr_year,
+                month = curr_month,
+                day = curr_day,
+                ok_text = _("Set date"),
+                title_text = _("Set date"),
+                callback = function(time)
+                    now_t = os.date("*t")
+                    if Device:setDateTime(time.year, time.month, time.day, now_t.hour, now_t.min, now_t.sec) then
+                        now_t = os.date("*t")
+                        UIManager:show(InfoMessage:new{
+                            text = T(_("Current date: %1-%2-%3"), now_t.year, string.format("%02d", now_t.month),
+                                string.format("%02d", now_t.day))
+                        })
+                    else
+                        UIManager:show(InfoMessage:new{
+                            text = _("Date couldn't be set"),
+                        })
+                    end
+                end
+            }
+            UIManager:show(date_widget)
+        end,
+    })
 end
 
 if Device:isKobo() then
@@ -171,12 +184,22 @@ common_settings.screen_dpi = require("ui/elements/screen_dpi_menu_table")
 common_settings.screen_eink_opt = require("ui/elements/screen_eink_opt_menu_table")
 common_settings.menu_activate = require("ui/elements/menu_activate")
 common_settings.screen_disable_double_tab = require("ui/elements/screen_disable_double_tap_table")
+common_settings.ignore_hold_corners = {
+    text = _("Ignore hold on corners"),
+    checked_func = function()
+        return G_reader_settings:isTrue("ignore_hold_corners")
+    end,
+    callback = function()
+        UIManager:broadcastEvent(Event:new("IgnoreHoldCorners"))
+    end,
+}
 
 if Device:canToggleGSensor() then
     common_settings.screen_toggle_gsensor = require("ui/elements/screen_toggle_gsensor")
 end
 
-if Screen.isColorScreen() then
+-- NOTE: Allow disabling color if it's mistakenly enabled on a Grayscale screen (after a settings import?)
+if Screen:isColorEnabled() or Screen:isColorScreen() then
     common_settings.color_rendering = require("ui/elements/screen_color_menu_table")
 end
 
@@ -188,6 +211,16 @@ if Device:isAndroid() then
     -- screen timeout options, disabled if device needs wakelocks.
     common_settings.screen_timeout = require("ui/elements/screen_android"):getTimeoutMenuTable()
 
+    -- haptic feedback override
+    common_settings.android_haptic_feedback = {
+        text = _("Force haptic feedback"),
+        checked_func = function() return G_reader_settings:isTrue("haptic_feedback_override") end,
+        callback = function()
+            G_reader_settings:flipNilOrFalse("haptic_feedback_override")
+            android.setHapticOverride(G_reader_settings:isTrue("haptic_feedback_override"))
+        end,
+    }
+
     -- volume key events
     common_settings.android_volume_keys = {
         text = _("Volume key page turning"),
@@ -197,6 +230,13 @@ if Device:isAndroid() then
             android.setVolumeKeysIgnored(not is_ignored)
             G_reader_settings:saveSetting("android_ignore_volume_keys", not is_ignored)
         end,
+    }
+
+    -- camera key events
+    common_settings.android_camera_key = {
+        text = _("Camera key toggles touchscreen support"),
+        checked_func = function() return G_reader_settings:isTrue("camera_key_toggles_touchscreen") end,
+        callback = function() G_reader_settings:flipNilOrFalse("camera_key_toggles_touchscreen") end,
     }
 
     -- fullscreen toggle on devices with compatible fullscreen methods (apis 14-18)
@@ -317,9 +357,76 @@ if Device:hasKeys() then
     }
 end
 
+-- Auto-save settings: default value, info text and warning, and menu items
+if G_reader_settings:readSetting("auto_save_settings_interval_minutes") == nil then
+    -- Default to auto save every 15 mn
+    G_reader_settings:saveSetting("auto_save_settings_interval_minutes", 15)
+end
+
+local auto_save_help_text = _([[
+This sets how often to rewrite to disk global settings and book metadata, including your current position and any highlights and bookmarks made, when you're reading a document.
+
+The normal behavior is to save those only when the document is closed, or your device suspended, or when exiting KOReader.
+
+Setting it to some interval may help prevent losing new settings/sidecar data after a software crash, but will cause more I/O writes the lower the interval is, and may slowly wear out your storage media in the long run.]])
+
+-- Some devices with FAT32 storage may not like having settings rewritten too often,
+-- so let that be known. See https://github.com/koreader/koreader/pull/3625
+local warn_about_auto_save = Device:isKobo() or Device:isKindle() or Device:isCervantes() or Device:isPocketBook() or Device:isSonyPRSTUX()
+if warn_about_auto_save then
+    local auto_save_help_warning = _([[Please be warned that on this device, setting a low interval may exacerbate the potential for filesystem corruption and complete data loss after a hardware crash.]])
+    auto_save_help_text = auto_save_help_text .. "\n\n" .. auto_save_help_warning
+end
+
+local function genAutoSaveMenuItem(value)
+    local setting_name = "auto_save_settings_interval_minutes"
+    local text
+    if not value then
+        text = _("Only on close, suspend and exit")
+    else
+        text = T(N_("Every minute", "Every %1 minutes", value), value)
+    end
+    return {
+        text = text,
+        help_text = auto_save_help_text,
+        checked_func = function()
+            return G_reader_settings:readSetting(setting_name) == value
+        end,
+        callback = function()
+            G_reader_settings:saveSetting(setting_name, value)
+        end,
+    }
+end
+
 common_settings.document = {
     text = _("Document"),
     sub_item_table = {
+        {
+            text_func = function()
+                local interval = G_reader_settings:readSetting("auto_save_settings_interval_minutes")
+                local s_interval
+                if interval == false then
+                    s_interval = "only on close"
+                else
+                    s_interval = T(N_("every 1 m", "every %1 m", interval), interval)
+                end
+                return T(_("Auto-save book metadata: %1"), s_interval)
+            end,
+            help_text = auto_save_help_text,
+            sub_item_table = {
+                genAutoSaveMenuItem(false),
+                genAutoSaveMenuItem(5),
+                genAutoSaveMenuItem(15),
+                genAutoSaveMenuItem(60),
+                warn_about_auto_save and {
+                    text = _("Important info about this auto-save option"),
+                    keep_menu_open = true,
+                    callback = function()
+                        UIManager:show(InfoMessage:new{ text = auto_save_help_text, })
+                    end,
+                } or nil,
+            },
+        },
         {
             text = _("Save document (write highlights into PDF)"),
             sub_item_table = {
@@ -409,12 +516,30 @@ common_settings.document = {
                     end,
                 },
                 {
+                    text = _("Go to beginning"),
+                    checked_func = function()
+                        return G_reader_settings:readSetting("end_document_action") == "goto_beginning"
+                    end,
+                    callback = function()
+                        G_reader_settings:saveSetting("end_document_action", "goto_beginning")
+                    end,
+                },
+                {
                     text = _("Return to file browser"),
                     checked_func = function()
                         return G_reader_settings:readSetting("end_document_action") == "file_browser"
                     end,
                     callback = function()
                         G_reader_settings:saveSetting("end_document_action", "file_browser")
+                    end,
+                },
+                {
+                    text = _("Mark book as read"),
+                    checked_func = function()
+                        return G_reader_settings:readSetting("end_document_action") == "mark_read"
+                    end,
+                    callback = function()
+                        G_reader_settings:saveSetting("end_document_action", "mark_read")
                     end,
                 },
                 {
@@ -431,6 +556,16 @@ common_settings.document = {
         {
             text = _("Highlight action"),
             sub_item_table = {
+                {
+                    text = _("Enable on single word selection"),
+                    checked_func = function()
+                        return G_reader_settings:isTrue("highlight_action_on_single_word")
+                    end,
+                    callback = function()
+                        G_reader_settings:flipNilOrFalse("highlight_action_on_single_word", nil)
+                    end,
+                    separator = true,
+                },
                 {
                     text = _("Ask with popup dialog"),
                     checked_func = function()
@@ -467,10 +602,36 @@ common_settings.document = {
                         G_reader_settings:saveSetting("default_highlight_action", "wikipedia")
                     end,
                 },
+                {
+                    text = _("Dictionary"),
+                    checked_func = function()
+                        return G_reader_settings:readSetting("default_highlight_action") == "dictionary"
+                    end,
+                    callback = function()
+                        G_reader_settings:saveSetting("default_highlight_action", "dictionary")
+                    end,
+                },
+                {
+                    text = _("Fulltext search"),
+                    checked_func = function()
+                        return G_reader_settings:readSetting("default_highlight_action") == "search"
+                    end,
+                    callback = function()
+                        G_reader_settings:saveSetting("default_highlight_action", "search")
+                    end,
+                },
             }
         },
     },
 }
 common_settings.language = Language:getLangMenuTable()
+
+common_settings.screenshot = {
+    text = _("Screenshot directory"),
+    callback = function()
+        local Screenshoter = require("ui/widget/screenshoter")
+        Screenshoter:chooseFolder()
+    end,
+}
 
 return common_settings

@@ -1,6 +1,7 @@
 --[[--
 TouchMenu widget for hierarchical menus.
 ]]
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local Button = require("ui/widget/button")
 local CenterContainer = require("ui/widget/container/centercontainer")
@@ -19,7 +20,6 @@ local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local LineWidget = require("ui/widget/linewidget")
-local RenderText = require("ui/rendertext")
 local RightContainer = require("ui/widget/container/rightcontainer")
 local Size = require("ui/size")
 local TextWidget = require("ui/widget/textwidget")
@@ -27,9 +27,9 @@ local UIManager = require("ui/uimanager")
 local UnderlineContainer = require("ui/widget/container/underlinecontainer")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
-local util = require("ffi/util")
+local getMenuText = require("ui/widget/menu").getMenuText
 local _ = require("gettext")
-local getMenuText = require("util").getMenuText
+local T = require("ffi/util").template
 local Input = Device.input
 local Screen = Device.screen
 
@@ -87,9 +87,6 @@ function TouchMenuItem:init()
     -- FrameContainer default paddings minus the checked widget width
     local text_max_width = self.dimen.w - 2*Size.padding.default - checked_widget:getSize().w
     local text = getMenuText(self.item)
-    if RenderText:sizeUtf8Text(0, Screen:getWidth(), self.face, text, true).x > text_max_width then
-        text = RenderText:truncateTextByWidth(text, self.face, text_max_width, true)
-    end
     self.item_frame = FrameContainer:new{
         width = self.dimen.w,
         bordersize = 0,
@@ -102,6 +99,7 @@ function TouchMenuItem:init()
             },
             TextWidget:new{
                 text = text,
+                max_width = text_max_width,
                 fgcolor = item_enabled ~= false and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
                 face = self.face,
             },
@@ -250,6 +248,11 @@ function TouchMenuBar:init()
         -- we have to use local variable here for closure callback
         local _start_seg = end_seg + icon_sep_width
         local _end_seg = _start_seg + self.icon_widgets[k]:getSize().w
+        end_seg = _end_seg -- for next loop _start_seg
+
+        if BD.mirroredUILayout() then
+            _start_seg, _end_seg = self.width - _end_seg, self.width - _start_seg
+        end
 
         if k == 1 then
             self.bar_sep = LineWidget:new{
@@ -297,9 +300,15 @@ function TouchMenuBar:init()
                 -- if the active icon is the last icon then the empty bar segment has
                 -- to move over to the right by the width of a separator and the stretch width
                 if last_icon then
+                    local _start_last_seg = icon_sep_width + stretch_width + _start_seg
+                    local _end_last_seg = icon_sep_width + stretch_width + _end_seg
+                    if BD.mirroredUILayout() then
+                        _start_last_seg = _start_seg - icon_sep_width - stretch_width
+                        _end_last_seg = _end_seg - icon_sep_width - stretch_width
+                    end
                     self.bar_sep.empty_segments = {
                         {
-                            s = icon_sep_width + stretch_width + _start_seg, e = icon_sep_width + stretch_width + _end_seg
+                            s = _start_last_seg, e = _end_last_seg
                         }
                     }
                     sep.style = "solid"
@@ -330,8 +339,6 @@ function TouchMenuBar:init()
             table.insert(self.icon_seps, icon_sep_duplicate)
             table.insert(self.bar_icon_group, icon_sep_duplicate)
         end
-
-        end_seg = _end_seg
     end
 
     self[1] = FrameContainer:new{
@@ -372,7 +379,7 @@ local TouchMenu = FocusManager:new{
     width = nil,
     height = nil,
     page = 1,
-    max_per_page = 10,
+    max_per_page_default = 10,
     -- for UIManager:setDirty
     show_parent = nil,
     cur_tab = -1,
@@ -432,14 +439,19 @@ function TouchMenu:init()
         align = "center",
     }
     -- group for page info
+    local chevron_left = "resources/icons/appbar.chevron.left.png"
+    local chevron_right = "resources/icons/appbar.chevron.right.png"
+    if BD.mirroredUILayout() then
+        chevron_left, chevron_right = chevron_right, chevron_left
+    end
     self.page_info_left_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.left.png",
+        icon = chevron_left,
         callback = function() self:onPrevPage() end,
         bordersize = 0,
         show_parent = self.show_parent,
     }
     self.page_info_right_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.right.png",
+        icon = chevron_right,
         callback = function() self:onNextPage() end,
         bordersize = 0,
         show_parent = self.show_parent,
@@ -548,8 +560,9 @@ function TouchMenu:_recalculatePageLayout()
 
     local item_list_content_height = content_height - footer_height
     self.perpage = math.floor(item_list_content_height / self.item_height)
-    if self.perpage > self.max_per_page then
-        self.perpage = self.max_per_page
+    local max_per_page = self.item_table.max_per_page or self.max_per_page_default
+    if self.perpage > max_per_page then
+        self.perpage = max_per_page
     end
 
     self.page_num = math.ceil(#self.item_table / self.perpage)
@@ -593,17 +606,63 @@ function TouchMenu:updateItems()
 
     table.insert(self.item_group, self.footer_top_margin)
     table.insert(self.item_group, self.footer)
-    -- @translators %1 is the current page. %2 is the total number of pages. In some languages a good translation might need to reverse this order, for instance: "Total %2, page %1".
-    self.page_info_text.text = util.template(_("Page %1 of %2"), self.page, self.page_num)
+    if self.page_num > 1 then
+        -- @translators %1 is the current page. %2 is the total number of pages. In some languages a good translation might need to reverse this order, for instance: "Total %2, page %1".
+        self.page_info_text:setText(T(_("Page %1 of %2"), self.page, self.page_num))
+    else
+        self.page_info_text:setText("")
+    end
     self.page_info_left_chev:showHide(self.page_num > 1)
     self.page_info_right_chev:showHide(self.page_num > 1)
     self.page_info_left_chev:enableDisable(self.page > 1)
     self.page_info_right_chev:enableDisable(self.page < self.page_num)
-    local time_info_txt = os.date("%H:%M").." @ "
-    if Device:getPowerDevice():isCharging() then
-        time_info_txt = time_info_txt.."+"
+
+    local time_info_txt
+    if G_reader_settings:nilOrTrue("twelve_hour_clock") then
+        if os.date("%p") == "AM" then
+            -- @translators This is the time in the morning in the 12-hour clock (%I is the hour, %M the minute).
+            time_info_txt = os.date(_("%I:%M AM"))
+        else
+            -- @translators This is the time in the afternoon in the 12-hour clock (%I is the hour, %M the minute).
+            time_info_txt = os.date(_("%I:%M PM"))
+        end
+    else
+        -- @translators This is the time in the 24-hour clock (%H is the hour, %M the minute).
+        time_info_txt = os.date(_("%H:%M"))
     end
-    time_info_txt = time_info_txt..Device:getPowerDevice():getCapacity().."%"
+    local powerd = Device:getPowerDevice()
+    local batt_lvl = powerd:getCapacity()
+    local batt_symbol
+    if powerd:isCharging() then
+        batt_symbol = ""
+    else
+        if batt_lvl >= 100 then
+            batt_symbol = ""
+        elseif batt_lvl >= 90 then
+            batt_symbol = ""
+        elseif batt_lvl >= 80 then
+            batt_symbol = ""
+        elseif batt_lvl >= 70 then
+            batt_symbol = ""
+        elseif batt_lvl >= 60 then
+            batt_symbol = ""
+        elseif batt_lvl >= 50 then
+            batt_symbol = ""
+        elseif batt_lvl >= 40 then
+            batt_symbol = ""
+        elseif batt_lvl >= 30 then
+            batt_symbol = ""
+        elseif batt_lvl >= 20 then
+            batt_symbol = ""
+        elseif batt_lvl >= 10 then
+            batt_symbol = ""
+        else
+            batt_symbol = ""
+        end
+    end
+    if not Device:isDesktop() then
+        time_info_txt = BD.wrap(time_info_txt) .. " " .. BD.wrap("⌁") .. BD.wrap(batt_symbol) ..  BD.wrap(batt_lvl .. "%")
+    end
     self.time_info:setText(time_info_txt)
 
     -- recalculate dimen based on new layout
@@ -614,7 +673,9 @@ function TouchMenu:updateItems()
     -- NOTE: We use a slightly ugly hack to detect a brand new menu vs. a tab switch,
     --       in order to optionally flash on initial menu popup...
     -- NOTE: Also avoid repainting what's underneath us on initial popup.
-    UIManager:setDirty(self.is_fresh and self.show_parent or "all", function()
+    -- NOTE: And we also only need to repaint what's behind us when switching to a smaller menu...
+    local keep_bg = old_dimen and self.dimen.h >= old_dimen.h
+    UIManager:setDirty((self.is_fresh or keep_bg) and self.show_parent or "all", function()
         local refresh_dimen =
             old_dimen and old_dimen:combine(self.dimen)
             or self.dimen
@@ -685,11 +746,12 @@ function TouchMenu:onPrevPage()
 end
 
 function TouchMenu:onSwipe(arg, ges_ev)
-    if ges_ev.direction == "west" then
+    local direction = BD.flipDirectionIfMirroredUILayout(ges_ev.direction)
+    if direction == "west" then
         self:onNextPage()
-    elseif ges_ev.direction == "east" then
+    elseif direction == "east" then
         self:onPrevPage()
-    elseif ges_ev.direction == "north" then
+    elseif direction == "north" then
         self:closeMenu()
     end
 end

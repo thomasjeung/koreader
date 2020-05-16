@@ -74,7 +74,6 @@ local Emulator = Device:new{
     hasFrontlight = yes,
     hasWifiToggle = yes,
     hasWifiManager = yes,
-    isDesktop = yes,
 }
 
 local Linux = Device:new{
@@ -215,10 +214,20 @@ function Device:init()
         setClipboardText = function(text)
             return input.setClipboardText(text)
         end,
+        gameControllerRumble = function(left_intensity, right_intensity, duration)
+            return input.gameControllerRumble(left_intensity, right_intensity, duration)
+        end,
         file_chooser = input.file_chooser,
     }
 
     self.keyboard_layout = require("device/sdl/keyboard_layout")
+
+    if self.input.gameControllerRumble(0, 0, 0) then
+        self.isHapticFeedbackEnabled = yes
+        self.performHapticFeedback = function(type)
+            self.input.gameControllerRumble()
+        end
+    end
 
     if emulator and portrait then
         self.input:registerEventAdjustHook(self.input.adjustTouchSwitchXY)

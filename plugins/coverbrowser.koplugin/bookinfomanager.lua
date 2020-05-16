@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local DataStorage = require("datastorage")
 local Device = require("device")
@@ -267,7 +268,8 @@ function BookInfoManager:getBookInfo(filepath, get_cover)
     -- files with unknown book extension. If not a supported extension,
     -- returns a bookinfo like-object enough for a correct display and
     -- to not trigger extraction, so we don't clutter DB with such files.
-    if not DocumentRegistry:hasProvider(filepath) then
+    local is_directory = lfs.attributes(filepath, "mode") == "directory"
+    if is_directory or not DocumentRegistry:hasProvider(filepath) then
         return {
             directory = directory,
             filename = filename,
@@ -277,6 +279,8 @@ function BookInfoManager:getBookInfo(filepath, get_cover)
             has_cover = nil,
             ignore_meta = "Y",
             ignore_cover = "Y",
+            -- for CoverMenu to *not* extend the onHold dialog:
+            _is_directory = is_directory,
             -- for ListMenu to show the filename *with* suffix:
             _no_provider = true
         }
@@ -647,6 +651,7 @@ function BookInfoManager:cleanUp()
 end
 
 local function findFilesInDir(path, recursive)
+    local stringStartsWith = require("util").stringStartsWith
     local dirs = {path}
     local files = {}
     while #dirs ~= 0 do
@@ -657,9 +662,11 @@ local function findFilesInDir(path, recursive)
             for f in lfs.dir(d) do
                 local fullpath = d.."/"..f
                 local attributes = lfs.attributes(fullpath)
-                if recursive and attributes.mode == "directory" and f ~= "." and f~=".." then
+                -- Don't traverse hidden folders if we're not showing them
+                if recursive and attributes.mode == "directory" and f ~= "." and f ~= ".." and (G_reader_settings:isTrue("show_hidden") or not stringStartsWith(f, ".")) then
                     table.insert(new_dirs, fullpath)
-                elseif attributes.mode == "file" and DocumentRegistry:hasProvider(fullpath) then
+                -- Always ignore macOS resource forks, too.
+                elseif attributes.mode == "file" and not stringStartsWith(f, "._") and DocumentRegistry:hasProvider(fullpath) then
                     table.insert(files, fullpath)
                 end
             end
@@ -841,7 +848,7 @@ Do you want to prune the cache of removed books?]]
 
         local orig_moved_offset = info.movable:getMovedOffset()
         info:free()
-        info.text = T(_("Indexing %1 / %2…\n\n%3"), i, nb_files, filename)
+        info.text = T(_("Indexing %1 / %2…\n\n%3"), i, nb_files, BD.filename(filename))
         info:init()
         local text_widget = table.remove(info.movable[1][1], 3)
         local text_widget_size = text_widget:getSize()

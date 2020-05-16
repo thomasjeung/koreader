@@ -1,9 +1,10 @@
-local ConfirmBox = require("ui/widget/confirmbox")
+local BD = require("ui/bidi")
 local Device = require("device")
 local Event = require("ui/event")
 local Geom = require("ui/geometry")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local Math = require("optmath")
+local MultiConfirmBox = require("ui/widget/multiconfirmbox")
 local UIManager = require("ui/uimanager")
 local logger = require("logger")
 local _ = require("gettext")
@@ -111,7 +112,11 @@ function ReaderPaging:setupTapTouchZones()
         ratio_w = DTAP_ZONE_BACKWARD.w, ratio_h = DTAP_ZONE_BACKWARD.h,
     }
 
+    local do_mirror = BD.mirroredUILayout()
     if self.inverse_reading_order then
+        do_mirror = not do_mirror
+    end
+    if do_mirror then
         forward_zone.ratio_x = 1 - forward_zone.ratio_x - forward_zone.ratio_w
         backward_zone.ratio_x = 1 - backward_zone.ratio_x - backward_zone.ratio_w
     end
@@ -241,17 +246,25 @@ function ReaderPaging:addToMainMenu(menu_items)
         text = _("Invert page turn taps and swipes"),
         checked_func = function() return self.inverse_reading_order end,
         callback = function()
-            self.inverse_reading_order = not self.inverse_reading_order
-            self:setupTapTouchZones()
+            self.ui:handleEvent(Event:new("ToggleReadingOrder"))
         end,
         hold_callback = function(touchmenu_instance)
-            UIManager:show(ConfirmBox:new{
-                text = self.inverse_reading_order and _("Enable right to left reading by default?")
-                    or _("Disable right to left reading by default?"),
-                ok_text = self.inverse_reading_order and _("Enable")
-                    or _("Disable"),
-                ok_callback = function()
-                    G_reader_settings:saveSetting("inverse_reading_order", self.inverse_reading_order)
+            local inverse_reading_order = G_reader_settings:isTrue("inverse_reading_order")
+            UIManager:show(MultiConfirmBox:new{
+                text = inverse_reading_order and _("The default (★) for newly opened books is right-to-left (RTL) page turning.\n\nWould you like to change it?")
+                or _("The default (★) for newly opened books is left-to-right (LTR) page turning.\n\nWould you like to change it?"),
+                choice1_text_func = function()
+                    return inverse_reading_order and _("LTR") or _("LTR (★)")
+                end,
+                choice1_callback = function()
+                     G_reader_settings:saveSetting("inverse_reading_order", false)
+                     if touchmenu_instance then touchmenu_instance:updateItems() end
+                end,
+                choice2_text_func = function()
+                    return inverse_reading_order and _("RTL (★)") or _("RTL")
+                end,
+                choice2_callback = function()
+                    G_reader_settings:saveSetting("inverse_reading_order", true)
                     if touchmenu_instance then touchmenu_instance:updateItems() end
                 end,
             })
@@ -365,39 +378,42 @@ function ReaderPaging:pageFlipping(flipping_page, flipping_ges)
     local steps = #self.flip_steps
     local stp_proportion = flipping_ges.distance / Screen:getWidth()
     local abs_proportion = flipping_ges.distance / Screen:getHeight()
-    if flipping_ges.direction == "east" then
+    local direction = BD.flipDirectionIfMirroredUILayout(flipping_ges.direction)
+    if direction == "east" then
         self:_gotoPage(flipping_page - self.flip_steps[math.ceil(steps*stp_proportion)])
-    elseif flipping_ges.direction == "west" then
+    elseif direction == "west" then
         self:_gotoPage(flipping_page + self.flip_steps[math.ceil(steps*stp_proportion)])
-    elseif flipping_ges.direction == "south" then
+    elseif direction == "south" then
         self:_gotoPage(flipping_page - math.floor(whole*abs_proportion))
-    elseif flipping_ges.direction == "north" then
+    elseif direction == "north" then
         self:_gotoPage(flipping_page + math.floor(whole*abs_proportion))
     end
     UIManager:setDirty(self.view.dialog, "partial")
 end
 
 function ReaderPaging:bookmarkFlipping(flipping_page, flipping_ges)
-    if flipping_ges.direction == "east" then
+    local direction = BD.flipDirectionIfMirroredUILayout(flipping_ges.direction)
+    if direction == "east" then
         self.ui:handleEvent(Event:new("GotoPreviousBookmark", flipping_page))
-    elseif flipping_ges.direction == "west" then
+    elseif direction == "west" then
         self.ui:handleEvent(Event:new("GotoNextBookmark", flipping_page))
     end
     UIManager:setDirty(self.view.dialog, "partial")
 end
 
 function ReaderPaging:onSwipe(_, ges)
+    local direction = BD.flipDirectionIfMirroredUILayout(ges.direction)
     if self.bookmark_flipping_mode then
         self:bookmarkFlipping(self.current_page, ges)
     elseif self.page_flipping_mode and self.original_page then
         self:_gotoPage(self.original_page)
-    elseif ges.direction == "west" then
+    elseif direction == "west" then
         if self.inverse_reading_order then
             self:onGotoViewRel(-1)
         else
             self:onGotoViewRel(1)
         end
-    elseif ges.direction == "east" then
+    elseif direction == "east" then
         if self.inverse_reading_order then
             self:onGotoViewRel(1)
         else
@@ -556,7 +572,7 @@ function ReaderPaging:onInitScrollPageStates(orig_mode)
         self.orig_page = self.current_page
         self.view.page_states = {}
         local blank_area = Geom:new{}
-        blank_area:setSizeTo(self.view.dimen)
+        blank_area:setSizeTo(self.view.visible_area)
         while blank_area.h > 0 do
             local offset = Geom:new{}
             -- caculate position in current page
@@ -732,7 +748,7 @@ function ReaderPaging:onScrollPanRel(diff)
     logger.dbg("pan relative height:", diff)
     local offset = Geom:new{x = 0, y = diff}
     local blank_area = Geom:new{}
-    blank_area:setSizeTo(self.view.dimen)
+    blank_area:setSizeTo(self.view.visible_area)
     local new_page_states
     if diff > 0 then
         -- pan to scroll down
@@ -758,11 +774,6 @@ function ReaderPaging:onScrollPanRel(diff)
     return true
 end
 
-function ReaderPaging:calculateOverlap()
-    local footer_height = (self.view.footer_visible and 1 or 0) * self.view.footer.bar_height
-    return self.overlap + footer_height
-end
-
 function ReaderPaging:onScrollPageRel(page_diff)
     if page_diff == 0 then return true end
     if page_diff > 0 then
@@ -777,8 +788,8 @@ function ReaderPaging:onScrollPageRel(page_diff)
         end
 
         local blank_area = Geom:new{}
-        blank_area:setSizeTo(self.view.dimen)
-        local overlap = self:calculateOverlap()
+        blank_area:setSizeTo(self.view.visible_area)
+        local overlap = self.overlap
         local offset = Geom:new{
             x = 0,
             y = last_visible_area.h - overlap
@@ -787,8 +798,8 @@ function ReaderPaging:onScrollPageRel(page_diff)
     elseif page_diff < 0 then
         -- page up, first page should be moved to bottom
         local blank_area = Geom:new{}
-        blank_area:setSizeTo(self.view.dimen)
-        local overlap = self:calculateOverlap()
+        blank_area:setSizeTo(self.view.visible_area)
+        local overlap = self.overlap
         local first_page_state = table.remove(self.view.page_states, 1)
         local offset = Geom:new{
             x = 0,
@@ -904,7 +915,7 @@ function ReaderPaging:onGotoPageRel(diff)
     else
         -- not end of page yet, goto next view
         -- adjust panning step according to overlap
-        local overlap = self:calculateOverlap()
+        local overlap = self.overlap
         if x_pan_off > overlap then
             -- moving to next view, move view
             x_pan_off = x_pan_off - overlap

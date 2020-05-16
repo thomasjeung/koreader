@@ -10,8 +10,9 @@ local Font = require("ui/font")
 local HorizontalGroup = require("ui/widget/horizontalgroup")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local LineWidget = require("ui/widget/linewidget")
-local OverlapGroup = require("ui/widget/overlapgroup")
+local MovableContainer = require("ui/widget/container/movablecontainer")
 local NumberPickerWidget = require("ui/widget/numberpickerwidget")
+local OverlapGroup = require("ui/widget/overlapgroup")
 local Size = require("ui/size")
 local TextBoxWidget = require("ui/widget/textboxwidget")
 local TextWidget = require("ui/widget/textwidget")
@@ -22,20 +23,27 @@ local _ = require("gettext")
 local Screen = Device.screen
 
 local SpinWidget = InputContainer:new{
+    title_text = "",
     title_face = Font:getFace("x_smalltfont"),
-    text = nil,
+    info_text = nil,
     width = Screen:getWidth() * 0.95,
     height = Screen:getHeight(),
+    value_table = nil,
+    value_index = nil,
     value = 1,
     value_max = 20,
     value_min = 0,
     value_step = 1,
     value_hold_step = 4,
-    ok_text = _("OK"),
-    cancel_text = _("Cancel"),
-    -- set this to see extra default button
+    cancel_text = _("Close"),
+    ok_text = _("Apply"),
+    keep_shown_on_apply = false,
+    -- Set this to add default button that restores number to its default value
     default_value = nil,
     default_text = _("Use default"),
+    -- Optional extra button on bottom
+    extra_text = nil,
+    extra_callback = nil,
 }
 
 function SpinWidget:init()
@@ -65,20 +73,31 @@ function SpinWidget:init()
 end
 
 function SpinWidget:update()
+    -- This picker_update_callback will be redefined later. It is needed
+    -- so we can have our MovableContainer repainted on NumberPickerWidgets
+    -- update. It is needed if we have enabled transparency on MovableContainer,
+    -- otherwise the NumberPicker area gets opaque on update.
+    local picker_update_callback = function() end
     local value_widget = NumberPickerWidget:new{
         show_parent = self,
         width = self.screen_width * 0.2,
         value = self.value,
+        value_table = self.value_table,
+        value_index = self.value_index,
         value_min = self.value_min,
         value_max = self.value_max,
         value_step = self.value_step,
         value_hold_step = self.value_hold_step,
         precision = self.precision,
+        update_callback = function() picker_update_callback() end,
     }
     local value_group = HorizontalGroup:new{
         align = "center",
         value_widget,
     }
+
+    local close_button = CloseButton:new{ window = self, padding_top = Size.margin.title, }
+    local btn_width = close_button:getSize().w + Size.padding.default * 2
 
     local value_title = FrameContainer:new{
         padding = Size.padding.default,
@@ -86,9 +105,9 @@ function SpinWidget:update()
         bordersize = 0,
         TextWidget:new{
             text = self.title_text,
+            max_width = self.width - btn_width,
             face = self.title_face,
             bold = true,
-            width = self.width,
         },
     }
     local value_line = LineWidget:new{
@@ -103,7 +122,7 @@ function SpinWidget:update()
             h = value_title:getSize().h
         },
         value_title,
-        CloseButton:new{ window = self, padding_top = Size.margin.title, },
+        close_button,
     }
     local buttons = {
         {
@@ -121,10 +140,12 @@ function SpinWidget:update()
                 text = self.ok_text,
                 callback = function()
                     if self.callback then
-                        self.value = value_widget:getValue()
+                        self.value, self.value_index = value_widget:getValue()
                         self:callback(self)
                     end
-                    self:onClose()
+                    if not self.keep_shown_on_apply then
+                        self:onClose()
+                    end
                 end,
             },
         }
@@ -137,6 +158,22 @@ function SpinWidget:update()
                 callback = function()
                     value_widget.value = self.default_value
                     value_widget:update()
+                end,
+            },
+        })
+    end
+    if self.extra_text then
+        table.insert(buttons,{
+            {
+                text = self.extra_text,
+                callback = function()
+                    if self.extra_callback then
+                        self.value, self.value_index = value_widget:getValue()
+                        self.extra_callback(self)
+                    end
+                    if not self.keep_shown_on_apply then -- assume extra wants it same as ok
+                        self:onClose()
+                    end
                 end,
             },
         })
@@ -154,13 +191,13 @@ function SpinWidget:update()
         value_bar,
         value_line,
     }
-    if self.text then
+    if self.info_text then
         table.insert(vgroup, FrameContainer:new{
             padding = Size.padding.default,
             margin = Size.margin.small,
             bordersize = 0,
             TextBoxWidget:new{
-                text = self.text,
+                text = self.info_text,
                 face = Font:getFace("x_smallinfofont"),
                 width = self.width * 0.9,
             }
@@ -187,6 +224,9 @@ function SpinWidget:update()
         background = Blitbuffer.COLOR_WHITE,
         vgroup,
     }
+    self.movable = MovableContainer:new{
+        self.spin_frame,
+    }
     self[1] = WidgetContainer:new{
         align = "center",
         dimen =Geom:new{
@@ -194,14 +234,21 @@ function SpinWidget:update()
             w = self.screen_width,
             h = self.screen_height,
         },
-        FrameContainer:new{
-            bordersize = 0,
-            self.spin_frame,
-        }
+        self.movable,
     }
     UIManager:setDirty(self, function()
         return "ui", self.spin_frame.dimen
     end)
+    picker_update_callback = function()
+        UIManager:setDirty("all", function()
+            return "ui", self.movable.dimen
+        end)
+    end
+end
+
+function SpinWidget:hasMoved()
+    local offset = self.movable:getMovedOffset()
+    return offset.x ~= 0 or offset.y ~= 0
 end
 
 function SpinWidget:onCloseWidget()

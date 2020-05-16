@@ -1,6 +1,7 @@
 local Cache = require("cache")
 local CacheItem = require("cacheitem")
 local CanvasContext = require("document/canvascontext")
+local DocSettings = require("docsettings")
 local Document = require("document/document")
 local DrawContext = require("ffi/drawcontext")
 local logger = require("logger")
@@ -64,9 +65,11 @@ function PdfDocument:convertKoptToReflowableFontSize(font_size)
         return font_size * default_font_size
     end
 
-    local docsettings = require("docsettings"):open(self.file)
-    local size = docsettings:readSetting("kopt_font_size")
-    docsettings:close()
+    local size
+    if DocSettings:hasSidecarFile(self.file) then
+        local doc_settings = DocSettings:open(self.file)
+        size = doc_settings:readSetting("kopt_font_size")
+    end
     if size then
         return size * default_font_size
     elseif G_reader_settings:readSetting("kopt_font_size") then
@@ -172,6 +175,14 @@ function PdfDocument:saveHighlight(pageno, item)
     local suffix = util.getFileNameSuffix(self.file)
     if string.lower(suffix) ~= "pdf" then return end
 
+    if self.is_writable == nil then
+        local handle = io.open(self.file, 'r+b')
+        self.is_writable = handle ~= nil
+        if handle then handle:close() end
+    end
+    if self.is_writable == false then
+        return false
+    end
     self.is_edited = true
     -- will also need mupdf_h.lua to be evaluated once
     -- but this is guaranteed at this point
@@ -277,6 +288,7 @@ function PdfDocument:register(registry)
     registry:addProvider("cbt", "application/vnd.comicbook+tar", self, 100)
     registry:addProvider("cbz", "application/vnd.comicbook+zip", self, 100)
     registry:addProvider("epub", "application/epub+zip", self, 50)
+    registry:addProvider("epub3", "application/epub+zip", self, 50)
     registry:addProvider("fb2", "application/fb2", self, 80)
     registry:addProvider("htm", "text/html", self, 90)
     registry:addProvider("html", "text/html", self, 90)

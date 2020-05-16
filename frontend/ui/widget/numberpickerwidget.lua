@@ -22,14 +22,15 @@ local Device = require("device")
 local FrameContainer = require("ui/widget/container/framecontainer")
 local Geom = require("ui/geometry")
 local Font = require("ui/font")
+local InfoMessage = require("ui/widget/infomessage")
 local InputContainer = require("ui/widget/container/inputcontainer")
 local InputDialog = require("ui/widget/inputdialog")
-local RenderText = require("ui/rendertext")
 local Size = require("ui/size")
 local UIManager = require("ui/uimanager")
 local VerticalGroup = require("ui/widget/verticalgroup")
 local VerticalSpan = require("ui/widget/verticalspan")
 local _ = require("gettext")
+local T = require("ffi/util").template
 local Screen = Device.screen
 
 local NumberPickerWidget = InputContainer:new{
@@ -43,6 +44,7 @@ local NumberPickerWidget = InputContainer:new{
     value_step = 1,
     value_hold_step = 4,
     value_table = nil,
+    value_index = nil,
     wrap = true,
     update_callback = function() end,
     -- in case we need calculate number of days in a given month and year
@@ -57,10 +59,8 @@ function NumberPickerWidget:init()
         self.width = self.screen_width * 0.2
     end
     if self.value_table then
-        self.value_index = 1
+        self.value_index = self.value_index or 1
         self.value = self.value_table[self.value_index]
-        self.step = 1
-        self.value_hold_step = 1
     end
     self:update()
 end
@@ -119,58 +119,70 @@ function NumberPickerWidget:paintWidget()
         width = self.screen_height * 0.01
     }
     local value = self.value
-    if self.value_table then
-        local text_width = RenderText:sizeUtf8Text(0, self.width, self.spinner_face, self.value, true, true).x
-        if self.width < text_width then
-            value = RenderText:truncateTextByWidth(self.value, self.spinner_face, self.width,true, true)
-        end
-    else
+    if not self.value_table then
         value = string.format(self.precision, value)
     end
 
-    local input
+    local input_dialog
     local callback_input = nil
     if self.value_table == nil then
         callback_input =  function()
-            input = InputDialog:new{
+            input_dialog = InputDialog:new{
                 title = _("Enter number"),
+                input = self.value,
                 input_type = "number",
                 buttons = {
                     {
                         {
                             text = _("Cancel"),
                             callback = function()
-                                UIManager:close(input)
+                                UIManager:close(input_dialog)
                             end,
                         },
                         {
                             text = _("OK"),
                             is_enter_default = true,
                             callback = function()
-                                input:closeInputDialog()
-                                local input_value = tonumber(input:getInputText())
+                                input_dialog:closeInputDialog()
+                                local input_value = tonumber(input_dialog:getInputText())
                                 if input_value and input_value >= self.value_min and input_value <= self.value_max then
                                     self.value = input_value
                                     self:update()
+                                    UIManager:close(input_dialog)
+                                elseif input_value and input_value < self.value_min then
+                                    UIManager:show(InfoMessage:new{
+                                        text = T(_("This value should be %1 or more."), self.value_min),
+                                        timeout = 2,
+                                    })
+                                elseif input_value and input_value > self.value_max then
+                                    UIManager:show(InfoMessage:new{
+                                        text = T(_("This value should be %1 or less."), self.value_max),
+                                        timeout = 2,
+                                    })
+                                else
+                                    UIManager:show(InfoMessage:new{
+                                        text = _("Invalid value. Please enter a valid value."),
+                                        timeout = 2
+                                    })
                                 end
-                                UIManager:close(input)
                             end,
                         },
                     },
                 },
             }
-            UIManager:show(input)
-            input:onShowKeyboard()
+            UIManager:show(input_dialog)
+            input_dialog:onShowKeyboard()
         end
     end
 
     local text_value = Button:new{
-        text = value,
+        text = tostring(value),
         bordersize = 0,
         padding = 0,
-        text_font_face = self.spinner_face_font,
-        text_font_size = self.spinner_face_size,
+        text_font_face = self.spinner_face.font,
+        text_font_size = self.spinner_face.orig_size,
         width = self.width,
+        max_width = self.width,
         callback = callback_input,
     }
     return VerticalGroup:new{
@@ -257,7 +269,7 @@ end
 Get value.
 --]]
 function NumberPickerWidget:getValue()
-    return self.value
+    return self.value, self.value_index
 end
 
 return NumberPickerWidget

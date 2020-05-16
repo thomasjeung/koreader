@@ -59,7 +59,8 @@ function ButtonTable:init()
                 max_width = (self.width - sizer_space)/column_cnt - 2*self.sep_width - 2*self.padding,
                 bordersize = 0,
                 margin = 0,
-                padding = 0,
+                padding = Size.padding.buttontable, -- a bit taller than standalone buttons, for easier tap
+                padding_h = 0, -- allow text to take more of the horizontal space
                 text_font_face = self.button_font_face,
                 text_font_size = self.button_font_size,
                 show_parent = self.show_parent,
@@ -69,7 +70,7 @@ function ButtonTable:init()
             end
             local button_dim = button:getSize()
             local vertical_sep = LineWidget:new{
-                background = Blitbuffer.COLOR_DARK_GRAY,
+                background = Blitbuffer.COLOR_GRAY,
                 dimen = Geom:new{
                     w = self.sep_width,
                     h = button_dim.h,
@@ -107,7 +108,7 @@ function ButtonTable:addHorizontalSep(vspan_before, add_line, vspan_after, black
     end
     if add_line then
         table.insert(self.container, LineWidget:new{
-            background = black_line and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
+            background = black_line and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_GRAY,
             dimen = Geom:new{
                 w = self.width,
                 h = self.sep_width,

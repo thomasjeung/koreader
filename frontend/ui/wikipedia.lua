@@ -421,7 +421,7 @@ local function image_load_bb_func(image, highres)
         -- We use an invisible widget that will resend the dismiss event,
         -- so that image loading in TextBoxWdiget is unobtrusive and
         -- interruptible
-        trap_widget = false
+        trap_widget = nil
         source = image.source
     else
         -- We need to let the user know image loading is happening,
@@ -655,6 +655,38 @@ local ext_to_mimetype = {
     woff = "application/font-woff",
 }
 
+-- Display from these Wikipedia should be RTL
+-- The API looks like it does not give any info about the LTR/RTL
+-- direction of the content it returns...
+-- (list made by quickly and manually checking links from:
+-- https://meta.wikimedia.org/wiki/List_of_Wikipedias )
+local rtl_wiki_code = {
+    fa  = "Persian",
+    ar  = "Arabic",
+    he  = "Hebrew",
+    ur  = "Urdu",
+    azb = "South Azerbaijani",
+    pnb = "Western Punjabi",
+    ckb = "Sorani",
+    arz = "Egyptian Arabic",
+    yi  = "Yiddish",
+    sd  = "Sindhi",
+    mzn = "Mazandarani",
+    ps  = "Pashto",
+    glk = "Gilaki",
+    lrc = "Northern Luri",
+    ug  = "Uyghur",
+    dv  = "Divehi",
+    arc = "Aramaic",
+    ks  = "Kashmiri",
+}
+
+function Wikipedia:isWikipediaLanguageRTL(lang)
+    if lang and rtl_wiki_code[lang:lower()] then
+        return true
+    end
+    return false
+end
 
 -- Create an epub file (with possibly images)
 function Wikipedia:createEpub(epub_path, page, lang, with_images)
@@ -916,23 +948,24 @@ h1, h2 {
     page-break-before: always;
     page-break-inside: avoid;
     page-break-after: avoid;
-    text-align: left;
+    text-align: start;
 }
 h3, h4, h5, h6 {
     page-break-before: auto;
     page-break-inside: avoid;
     page-break-after: avoid;
-    text-align: left;
+    text-align: start;
 }
 /* Styles for our centered titles on first page */
 h1.koreaderwikifrontpage, h5.koreaderwikifrontpage {
     page-break-before: avoid;
     text-align: center;
-    margin-top: 0em;
+    margin-top: 0;
 }
 p.koreaderwikifrontpage {
     font-style: italic;
     font-size: 90%;
+    text-indent: 0;
     margin: 1em 2em 1em 2em;
 }
 hr.koreaderwikifrontpage {
@@ -955,7 +988,10 @@ a.newwikinonexistent {
 
 /* Don't waste left margin for TOC, notes and other lists */
 ul, ol {
-    margin-left: 0em;
+    margin-left: 0;
+}
+ul:dir(rtl), ol:dir(rtl) {
+    margin-right: 0;
 }
 /* OL in Wikipedia pages may inherit their style-type from a wrapping div,
  * ensure they fallback to decimal with inheritance */
@@ -982,12 +1018,32 @@ body > div > div.thumb {
     /* Change some of their styles when floating */
     -cr-only-if: float-floatboxes;
         clear: right;
-        margin:  0em 0em 0.2em 0.5em !important;
+        margin:  0 0 0.2em 0.5em !important;
         font-size: 80% !important;
     /* Ensure a fixed width when not in "web" render mode */
     -cr-only-if: float-floatboxes -allow-style-w-h-absolute-units;
         width: 33% !important;
 }
+body > div:dir(rtl) > div.thumb { /* invert if RTL */
+    float: left !important;
+    -cr-only-if: float-floatboxes;
+        clear: left;
+        margin:  0 0.5em 0.2em 0 !important;
+}
+/* Allow original mix of left/right floats in web mode */
+body > div > div.thumb.tleft {
+    -cr-only-if: float-floatboxes allow-style-w-h-absolute-units;
+        float: left !important;
+        clear: left;
+        margin:  0 0.5em 0.2em 0 !important;
+}
+body > div > div.thumb.tright {
+    -cr-only-if: float-floatboxes allow-style-w-h-absolute-units;
+        float: right !important;
+        clear: right;
+        margin:  0 0 0.2em 0.5em !important;
+}
+
 body > div > div.thumb img {
     /* Make float's inner images 100% of their container's width when not in "web" mode */
     -cr-only-if: float-floatboxes -allow-style-w-h-absolute-units;
@@ -995,19 +1051,44 @@ body > div > div.thumb img {
         height: 100% !important;
 }
 
-/* Style gallery and the galleryboxes it contains */
-.gallery {
+/* Some other (usually wide) thumbnails are wrapped in a DIV.center:
+ * avoid having them overflowing in web mode (no issue in other modes).
+ * (Use "width: auto", as crengine does not support "max-width:") */
+body > div > div.center > div.thumb * {
+    -cr-only-if: allow-style-w-h-absolute-units;
+        width: auto !important;
+}
+
+/* Style gallery and the galleryboxes it contains.
+/* LI.galleryboxes about the same topic may be in multiple UL.gallery
+ * containers, and Wikipedia may group them by 3 or 4 in each container.
+ * We'd rather want them in a single group, so they can be laid out
+ * taking the full width depending on render mode and screen dpi.
+ * So, make UL.gallery inline, and all its children inline-block.
+ * The consecutive inline UL.gallery will be wrapped by crengine
+ * in a single autoBoxing element, that we style a bit, hoping
+ * Wikipedia properly have all its 1st level elements "display:block"
+ * and we do not style other autoBoxed inlines at this level. */
+body > div > ul.gallery,
+body > div > autoBoxing > ul.gallery {
+    display: inline; /* keep them inline once autoBoxed */
+}
+body > div > autoBoxing { /* created by previous style */
     width: 100%;
     margin-top: 1em;
-}
-/* galleryboxes about the same topic may be in multiple gallery containers,
- * make the floating galleryboxes continuous */
-.gallery + .gallery {
-    clear: none;
-    margin-top: 0;
-}
-.gallery + * {
+    margin-bottom: 1em;
     clear: both;
+    /* Have non-full-width inline-blocks laid out centered */
+    text-align: center;
+}
+body > div > ul.gallery > *,
+body > div > autoBoxing > ul.gallery > * {
+    /* Make all ul.gallery children inline-block and taking 100% width
+     * so they feel like classically stacked display:block */
+    display: inline-block;
+    width: 100%;
+    /* Have gallerycaption and galleryboxes content centered */
+    text-align: center;
 }
 .gallerycaption {
     font-weight: bold;
@@ -1018,28 +1099,29 @@ li.gallerybox {
     /* Style gallerybox just as main thumbs */
     list-style-type: none;
     border: dotted 1px black;
-    margin:  0.5em 2.5em 0.5em 2.5em;
-    padding: 0.5em 0.5em 0.2em 0.5em;
-    padding-top: ]].. (include_images and "0.5em" or "0.15em") .. [[;
-    text-align: center;
+    margin:  0.5em 2.5em 0.5em 2.5em !important;
+    padding: 0.5em 0.5em 0.2em 0.5em !important;
+    padding-top: ]].. (include_images and "0.5em" or "0.15em") .. [[ !important;
     text-indent: 0;
     font-size: 90%;
-    page-break-inside: avoid;
-    /* Allow them to float (even if "display: inline-block" would be nicer) */
-    float: left;
+    vertical-align: top; /* align them all to their top */
+    /* No float here, but use these to distinguish flat/book/web modes */
+    -cr-only-if: -float-floatboxes;
+        width: 100% !important; /* flat mode: force full width */
     -cr-only-if: float-floatboxes;
-        /* Remove our wide horizontal margins if floating */
+        /* Remove our wide horizontal margins in book/web modes */
         margin:  0.5em 0.5em 0.5em 0.5em !important;
     -cr-only-if: float-floatboxes -allow-style-w-h-absolute-units;
         /* Set a fixed width when not in "web" mode */
-        width: 25% !important;
+        width: 25% !important; /* will allow rows of 3 */
+    /* In web mode, allow the specified widths in HTML style attributes  */
 }
 li.gallerybox p {
     /* Reset indent as we have everything centered */
     text-indent: 0;
 }
 li.gallerybox div.thumb {
-    /* Remove thumb styling, which we set on the gallerybox */
+    /* Remove thumb styling, which we have set on the gallerybox */
     border: solid 1px white;
     margin: 0;
     padding: 0;
@@ -1054,10 +1136,10 @@ li.gallerybox * {
         width: 100% !important;
 }
 li.gallerybox div.thumb img {
-    /* Make float's inner images 100% of their container's width
+    /* Make inline-block's inner images 100% of their container's width
      * when not in "web" mode (same as previous, but with height */
     -cr-only-if: float-floatboxes -allow-style-w-h-absolute-units;
-        width: 100% !important;
+        width:  100% !important;
         height: 100% !important;
 }
 
@@ -1168,32 +1250,9 @@ table {
     -- external link for us, so let's remove this link.
     html = html:gsub("<a[^>]*>%s*(<%s*img [^>]*>)%s*</a>", "%1")
 
-    --- @todo do something for <li class="gallerybox"...> so they are no more
-    -- a <li> (crengine displays them one above the other) and can be displayed
-    -- side by side
-
-    -- For some <div class="thumb tright"> , which include nested divs, although
-    -- perfectly balanced, crengine seems to miss some closing </div> and we
-    -- end up having our image bordered box including the remaining main wiki text.
-    -- It looks like this code is supposed to deal with class= containing multiple
-    -- class names :
-    --   https://github.com/koreader/crengine/commit/0930ec7230e720c148fd6f231d69558832b4d53a
-    -- and that it may stumble on some cases.
-    -- It's all perfectly fine if we make all these div with a single class name
-    --   html = html:gsub([[<div class="thumb [^"]*">]], [[<div class="thumb">]])
-    --
-    -- But we may as well make all class= have a single name to avoid other problems
-    -- (no real risk with that, as we don't define any style for wikipedia class names,
-    -- except div.thumb that always appears first).
-    html = html:gsub([[(<[^>]* class="[^ "]+)%s+[^"]*"]], [[%1"]])
-
-    -- crengine seems to consider unknown tag as 'block' elements, so we may
-    -- want to remove or replace those that should be considered 'inline' elements
-    html = html:gsub("</?time[^>]*>", "")
-
     -- crengine does not support the <math> family of tags for displaying formulas,
-    -- which results in lots of space taken by individual character in the formula, each
-    -- on a single line...
+    -- which results in lots of space taken by individual character in the formula,
+    -- each on a single line...
     -- Also, usally, these <math> tags are followed by a <img> tag pointing to a
     -- SVG version of the formula, that we took care earlier to change the url to
     -- point to a PNG version of the formula (which is still not perfect, as it does
@@ -1220,26 +1279,13 @@ table {
     html = html:gsub([[href="/wiki/([^"]*)"]], cleanWikiPageTitle)
 
     -- Remove href from links to non existant wiki page so they are not clickable :
-    -- <a href="/w/index.php?title=PageTitle&amp;action=edit&amp;redlink=1" class="new" title="PageTitle">PageTitle____on</a>
+    -- <a href="/w/index.php?title=PageTitle&amp;action=edit&amp;redlink=1" class="new"
+    --          title="PageTitle">PageTitle____on</a>
     -- (removal of the href="" will make them non clickable)
     html = html:gsub([[<a[^>]* class="new"[^>]*>]], [[<a class="newwikinonexistent">]])
 
     -- Fix some other protocol-less links to wikipedia (href="//fr.wikipedia.org/w/index.php..)
     html = html:gsub([[href="//]], [[href="https://]])
-
-    -- crengine does not return link if multiple class names in <a> (<a class="external text" href="">)
-    -- it would be no problem as we can't follow them, but when the user tap
-    -- on it, the tap is propagated to other widgets and page change happen...
-    --   html = html:gsub([[<a rel="nofollow" class="external text"]], [[<a rel="nofollow" class="externaltext"]])
-    --   html = html:gsub([[<a class="external text"]], [[<a class="externaltext"]])
-    -- Solved by our multiple class names suppression above
-
-    -- Avoid link being clickable before <a> (if it starts a line) or after </a> (if it
-    -- ends a line or a block) by wrapping it with U+200B ZERO WIDTH SPACE which will
-    -- make the DOM tree walking code to find a link stop at it.
-    --   html = html:gsub("(<[aA])", "\xE2\x80\x8B%1")
-    --   html = html:gsub("(</[aA]>)", "%1\xE2\x80\x8B")
-    -- Fixed in crengine lvtinydom.
 
     if self.wiki_prettify then
         -- Prepend some symbols to section titles for a better visual feeling of hierarchy
@@ -1259,8 +1305,13 @@ table {
     local saved_on = T(_("Saved on %1"), os.date("%b %d, %Y %H:%M:%S"))
     local online_version_htmllink = string.format([[<a href="%s/wiki/%s">%s</a>]], wiki_base_url, page:gsub(" ", "_"), _("online version"))
     local see_online_version = T(_("See %1 for up-to-date content"), online_version_htmllink)
+    -- Set dir= attribute on the HTML tag for RTL languages
+    local html_dir = ""
+    if self:isWikipediaLanguageRTL(lang) then
+        html_dir = ' dir="rtl"'
+    end
     epub:add("OEBPS/content.html", string.format([[
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml"%s>
 <head>
   <title>%s</title>
   <link type="text/css" rel="stylesheet" href="stylesheet.css"/>
@@ -1273,7 +1324,7 @@ table {
 %s
 </body>
 </html>
-]], page_cleaned, page_htmltitle, lang:upper(), saved_on, see_online_version, html))
+]], html_dir, page_cleaned, page_htmltitle, lang:upper(), saved_on, see_online_version, html))
 
     -- Force a GC to free the memory we used till now (the second call may
     -- help reclaim more memory).

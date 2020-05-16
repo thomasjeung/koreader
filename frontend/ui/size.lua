@@ -41,6 +41,7 @@ local Size = {
         tiny = Screen:scaleBySize(1),
         small = Screen:scaleBySize(2),
         title = Screen:scaleBySize(2),
+        fine_tune = Screen:scaleBySize(3),
         button = 0,
     },
     padding = {
@@ -49,6 +50,7 @@ local Size = {
         small = Screen:scaleBySize(2),
         large = Screen:scaleBySize(10),
         button = Screen:scaleBySize(2),
+        buttontable = Screen:scaleBySize(4),
         fullscreen = Screen:scaleBySize(15),
     },
     radius = {
@@ -60,9 +62,11 @@ local Size = {
         thin = Screen:scaleBySize(0.5),
         medium = Screen:scaleBySize(1),
         thick = Screen:scaleBySize(1.5),
+        progress = Screen:scaleBySize(7),
     },
     item = {
         height_default = Screen:scaleBySize(30),
+        height_big = Screen:scaleBySize(40),
         height_large = Screen:scaleBySize(50),
     },
     span = {

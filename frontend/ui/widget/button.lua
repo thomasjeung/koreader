@@ -33,14 +33,18 @@ local Button = InputContainer:new{
     text = nil, -- mandatory
     text_func = nil,
     icon = nil,
+    icon_rotation_angle = 0,
     preselect = false,
     callback = nil,
     enabled = true,
+    allow_hold_when_disabled = false,
     margin = 0,
     bordersize = Size.border.button,
     background = Blitbuffer.COLOR_WHITE,
     radius = Size.radius.button,
     padding = Size.padding.button,
+    padding_h = nil,
+    padding_v = nil,
     width = nil,
     max_width = nil,
     text_font_face = "cfont",
@@ -54,10 +58,17 @@ function Button:init()
         self.text = self.text_func()
     end
 
+    if not self.padding_h then
+        self.padding_h = self.padding
+    end
+    if not self.padding_v then
+        self.padding_v = self.padding
+    end
+
     if self.text then
         self.label_widget = TextWidget:new{
             text = self.text,
-            max_width = self.max_width and self.max_width - 2*self.padding - 2*self.margin - 2*self.bordersize or nil,
+            max_width = self.max_width and self.max_width - 2*self.padding_h - 2*self.margin - 2*self.bordersize or nil,
             fgcolor = self.enabled and Blitbuffer.COLOR_BLACK or Blitbuffer.COLOR_DARK_GRAY,
             bold = self.text_font_bold,
             face = Font:getFace(self.text_font_face, self.text_font_size)
@@ -65,6 +76,7 @@ function Button:init()
     else
         self.label_widget = ImageWidget:new{
             file = self.icon,
+            rotation_angle = self.icon_rotation_angle,
             dim = not self.enabled,
             scale_for_dpi = true,
         }
@@ -79,7 +91,10 @@ function Button:init()
         bordersize = self.bordersize,
         background = self.background,
         radius = self.radius,
-        padding = self.padding,
+        padding_top = self.padding_v,
+        padding_bottom = self.padding_v,
+        padding_left = self.padding_h,
+        padding_right = self.padding_h,
         CenterContainer:new{
             dimen = Geom:new{
                 w = self.width,
@@ -222,6 +237,10 @@ function Button:onTapSelectButton()
             -- And we also often have to delay the callback to both see the flash and/or avoid tearing artefacts w/ fast refreshes...
             UIManager:tickAfterNext(function()
                 self.callback()
+                if not self[1] or not self[1].invert or not self[1].dimen then
+                    -- widget no more there (destroyed, re-init'ed by setText(), or not inverted: nothing to invert back
+                    return
+                end
                 self[1].invert = false
                 UIManager:widgetRepaint(self[1], self[1].dimen.x, self[1].dimen.y)
                 if self.text then
@@ -243,7 +262,7 @@ function Button:onTapSelectButton()
 end
 
 function Button:onHoldSelectButton()
-    if self.enabled and self.hold_callback then
+    if self.hold_callback and (self.enabled or self.allow_hold_when_disabled) then
         self.hold_callback()
     elseif self.hold_input then
         self:onInput(self.hold_input, true)
@@ -259,7 +278,7 @@ function Button:onHoldReleaseSelectButton()
     -- Safe-guard for when used inside a MovableContainer,
     -- which would handle HoldRelease and process it like
     -- a Hold if we wouldn't return true here
-    if self.enabled and self.hold_callback then
+    if self.hold_callback and (self.enabled or self.allow_hold_when_disabled) then
         return true
     elseif self.hold_input or type(self.hold_input_func) == "function" then
         return true

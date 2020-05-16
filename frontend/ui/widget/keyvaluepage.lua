@@ -19,6 +19,7 @@ Example:
 
 ]]
 
+local BD = require("ui/bidi")
 local Blitbuffer = require("ffi/blitbuffer")
 local BottomContainer = require("ui/widget/container/bottomcontainer")
 local Button = require("ui/widget/button")
@@ -34,7 +35,6 @@ local InputContainer = require("ui/widget/container/inputcontainer")
 local LeftContainer = require("ui/widget/container/leftcontainer")
 local LineWidget = require("ui/widget/linewidget")
 local OverlapGroup = require("ui/widget/overlapgroup")
-local RenderText = require("ui/rendertext")
 local Size = require("ui/size")
 local TextViewer = require("ui/widget/textviewer")
 local TextWidget = require("ui/widget/textwidget")
@@ -57,20 +57,12 @@ local KeyValueTitle = VerticalGroup:new{
 function KeyValueTitle:init()
     self.close_button = CloseButton:new{ window = self }
     local btn_width = self.close_button:getSize().w
-    local title_txt_width = RenderText:sizeUtf8Text(
-                                0, self.width, self.tface, self.title).x
-    local show_title_txt
-    if self.width < (title_txt_width + btn_width) then
-        show_title_txt = RenderText:truncateTextByWidth(
-                            self.title, self.tface, self.width-btn_width)
-    else
-        show_title_txt = self.title
-    end
     -- title and close button
     table.insert(self, OverlapGroup:new{
         dimen = { w = self.width },
         TextWidget:new{
-            text = show_title_txt,
+            text = self.title,
+            max_width = self.width - btn_width,
             face = self.tface,
         },
         self.close_button,
@@ -124,6 +116,7 @@ end
 local KeyValueItem = InputContainer:new{
     key = nil,
     value = nil,
+    value_lang = nil,
     cface = Font:getFace("smallinfofont"),
     tface = Font:getFace("smallinfofontbold"),
     width = nil,
@@ -154,25 +147,55 @@ function KeyValueItem:init()
 
     local frame_padding = Size.padding.default
     local frame_internal_width = self.width - frame_padding * 2
-    local key_w = frame_internal_width / 2
+    local middle_padding = Size.padding.default -- min enforced padding between key and value
+    local available_width = frame_internal_width - middle_padding
+
+    -- Default widths (and position of value widget) if each text fits in 1/2 screen width
+    local key_w = frame_internal_width / 2 - middle_padding
     local value_w = frame_internal_width / 2
-    local key_w_rendered = RenderText:sizeUtf8Text(0, frame_internal_width, self.tface, self.key).x
-    local value_w_rendered = RenderText:sizeUtf8Text(0, frame_internal_width, self.cface, tvalue).x
-    local space_w_rendered = RenderText:sizeUtf8Text(0, frame_internal_width, self.cface, " ").x
+
+    local key_widget = TextWidget:new{
+        text = self.key,
+        max_width = available_width,
+        face = self.tface,
+    }
+    local value_widget = TextWidget:new{
+        text = tvalue,
+        max_width = available_width,
+        face = self.cface,
+        lang = self.value_lang,
+    }
+    local key_w_rendered = key_widget:getWidth()
+    local value_w_rendered = value_widget:getWidth()
+
+    -- As both key_widget and value_width will be in a HorizontalGroup,
+    -- and key is always left aligned, we can just tweak the key width
+    -- to position the value_widget
+    local value_align_right = false
+    local fit_right_align = true -- by default, really right align
+
     if key_w_rendered > key_w or value_w_rendered > value_w then
-        -- truncate key or value so they fit in one row
-        if key_w_rendered + value_w_rendered > frame_internal_width then
+        -- One (or both) does not fit in 1/2 width
+        if key_w_rendered + value_w_rendered > available_width then
+            -- Both do not fit: one has to be truncated so they fit
             if key_w_rendered >= value_w_rendered then
-                key_w = frame_internal_width - value_w_rendered
-                self.show_key = RenderText:truncateTextByWidth(self.key, self.tface, frame_internal_width - value_w_rendered)
-                self.show_value = tvalue
+                -- Rare case: key larger than value.
+                -- We should have kept our keys small, smaller than 1/2 width.
+                -- If it is larger than value, it's that value is kinda small,
+                -- so keep the whole value, and truncate the key
+                key_w = available_width - value_w_rendered
             else
-                key_w = key_w_rendered + space_w_rendered
-                self.show_value = RenderText:truncateTextByWidth(tvalue, self.cface, frame_internal_width - key_w_rendered,
-                    false, false, true)
-                self.show_key = self.key
+                -- Usual case: value larger than key.
+                -- Keep our small key, fit the value in the remaining width.
+                key_w = key_w_rendered
             end
-            -- allow for displaying the non-truncated texts with Hold
+            value_align_right = true -- so the ellipsis touches the screen right border
+            if self.value_overflow_align ~= "right" and self.value_align ~= "right" then
+                -- Don't adjust the ellipsis to the screen right border,
+                -- so the left of text is aligned with other truncated texts
+                fit_right_align = false
+            end
+            -- Allow for displaying the non-truncated texts with Hold
             if Device:isTouchDevice() then
                 self.ges_events.Hold = {
                     GestureRange:new{
@@ -181,23 +204,38 @@ function KeyValueItem:init()
                     }
                 }
             end
-        -- misalign to fit all info
         else
+            -- Both can fit: break the 1/2 widths
             if self.value_overflow_align == "right" or self.value_align == "right" then
-                key_w = frame_internal_width - value_w_rendered
+                key_w = available_width - value_w_rendered
+                value_align_right = true
             else
-                key_w = key_w_rendered + space_w_rendered
+                key_w = key_w_rendered
             end
-            self.show_key = self.key
-            self.show_value = tvalue
         end
+        -- In all the above case, we set the right key_w to include any
+        -- needed additional in-between padding: value_w is what's left.
+        value_w = available_width - key_w
     else
         if self.value_align == "right" then
-            key_w = frame_internal_width - value_w_rendered
+            key_w = available_width - value_w_rendered
+            value_w = value_w_rendered
+            value_align_right = true
         end
-        self.show_key = self.key
-        self.show_value = tvalue
     end
+
+    -- Adjust widgets' max widths if needed
+    value_widget:setMaxWidth(value_w)
+    if fit_right_align and value_align_right and value_widget:getWidth() < value_w then
+        -- Because of truncation at glyph boundaries, value_widget
+        -- may be a tad smaller than the specified value_w:
+        -- add some padding to key_w so value is pushed to the screen right border
+        key_w = key_w + ( value_w - value_widget:getWidth() )
+    end
+    key_widget:setMaxWidth(key_w)
+
+    -- For debugging positioning:
+    -- value_widget = FrameContainer:new{ padding=0, margin=0, bordersize=1, value_widget }
 
     self[1] = FrameContainer:new{
         padding = frame_padding,
@@ -209,20 +247,17 @@ function KeyValueItem:init()
                     w = key_w,
                     h = self.height
                 },
-                TextWidget:new{
-                    text = self.show_key,
-                    face = self.tface,
-                }
+                key_widget,
+            },
+            HorizontalSpan:new{
+                width = middle_padding,
             },
             LeftContainer:new{
                 dimen = {
                     w = value_w,
                     h = self.height
                 },
-                TextWidget:new{
-                    text = self.show_value,
-                    face = self.cface,
-                }
+                value_widget,
             }
         }
     }
@@ -255,6 +290,7 @@ function KeyValueItem:onHold()
     local textviewer = TextViewer:new{
         title = self.key,
         text = self.value,
+        lang = self.value_lang,
         width = self.textviewer_width,
         height = self.textviewer_height,
     }
@@ -267,6 +303,7 @@ local KeyValuePage = InputContainer:new{
     title = "",
     width = nil,
     height = nil,
+    values_lang = nil,
     -- index for the first item to show
     show_page = 1,
     use_top_page_count = false,
@@ -301,6 +338,7 @@ function KeyValuePage:init()
     end
 
     -- return button
+    --- @todo: alternative icon if BD.mirroredUILayout()
     self.page_return_arrow = Button:new{
         icon = "resources/icons/appbar.arrow.left.up.png",
         callback = function() self:onReturn() end,
@@ -308,26 +346,34 @@ function KeyValuePage:init()
         show_parent = self,
     }
     -- group for page info
+    local chevron_left = "resources/icons/appbar.chevron.left.png"
+    local chevron_right = "resources/icons/appbar.chevron.right.png"
+    local chevron_first = "resources/icons/appbar.chevron.first.png"
+    local chevron_last = "resources/icons/appbar.chevron.last.png"
+    if BD.mirroredUILayout() then
+        chevron_left, chevron_right = chevron_right, chevron_left
+        chevron_first, chevron_last = chevron_last, chevron_first
+    end
     self.page_info_left_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.left.png",
+        icon = chevron_left,
         callback = function() self:prevPage() end,
         bordersize = 0,
         show_parent = self,
     }
     self.page_info_right_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.right.png",
+        icon = chevron_right,
         callback = function() self:nextPage() end,
         bordersize = 0,
         show_parent = self,
     }
     self.page_info_first_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.first.png",
+        icon = chevron_first,
         callback = function() self:goToPage(1) end,
         bordersize = 0,
         show_parent = self,
     }
     self.page_info_last_chev = Button:new{
-        icon = "resources/icons/appbar.chevron.last.png",
+        icon = chevron_last,
         callback = function() self:goToPage(self.pages) end,
         bordersize = 0,
         show_parent = self,
@@ -414,6 +460,7 @@ function KeyValuePage:init()
 
     local content = OverlapGroup:new{
         dimen = self.dimen:copy(),
+        allow_mirroring = false,
         VerticalGroup:new{
             align = "left",
             self.title_bar,
@@ -471,6 +518,7 @@ function KeyValuePage:_populateItems()
                     width = self.item_width,
                     key = entry[1],
                     value = entry[2],
+                    value_lang = self.values_lang,
                     callback = entry.callback,
                     callback_back = entry.callback_back,
                     textviewer_width = self.textviewer_width,
@@ -498,7 +546,7 @@ function KeyValuePage:_populateItems()
         table.insert(self.main_content,
                      VerticalSpan:new{ width = self.item_margin })
     end
-    self.page_info_text:setText(T(_("page %1 of %2"), self.show_page, self.pages))
+    self.page_info_text:setText(T(_("Page %1 of %2"), self.show_page, self.pages))
     self.page_info_left_chev:showHide(self.pages > 1)
     self.page_info_right_chev:showHide(self.pages > 1)
     self.page_info_first_chev:showHide(self.pages > 2)
@@ -525,16 +573,17 @@ function KeyValuePage:onPrevPage()
 end
 
 function KeyValuePage:onSwipe(arg, ges_ev)
-    if ges_ev.direction == "west" then
+    local direction = BD.flipDirectionIfMirroredUILayout(ges_ev.direction)
+    if direction == "west" then
         self:nextPage()
         return true
-    elseif ges_ev.direction == "east" then
+    elseif direction == "east" then
         self:prevPage()
         return true
-    elseif ges_ev.direction == "south" then
+    elseif direction == "south" then
         -- Allow easier closing with swipe down
         self:onClose()
-    elseif ges_ev.direction == "north" then
+    elseif direction == "north" then
         -- no use for now
         do end -- luacheck: ignore 541
     else -- diagonal swipe

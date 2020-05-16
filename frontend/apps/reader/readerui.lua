@@ -4,6 +4,7 @@ ReaderUI is an abstraction for a reader interface.
 It works using data gathered from a document interface.
 ]]--
 
+local BD = require("ui/bidi")
 local Cache = require("cache")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Device = require("device")
@@ -11,6 +12,7 @@ local DocSettings = require("docsettings")
 local DocumentRegistry = require("document/documentregistry")
 local Event = require("ui/event")
 local FileManagerBookInfo = require("apps/filemanager/filemanagerbookinfo")
+local FileManagerCollection = require("apps/filemanager/filemanagercollection")
 local FileManagerHistory = require("apps/filemanager/filemanagerhistory")
 local FileManagerFileSearcher = require("apps/filemanager/filemanagerfilesearcher")
 local FileManagerShortcuts = require("apps/filemanager/filemanagershortcuts")
@@ -32,10 +34,10 @@ local ReaderGesture = require("apps/reader/modules/readergesture")
 local ReaderGoto = require("apps/reader/modules/readergoto")
 local ReaderHinting = require("apps/reader/modules/readerhinting")
 local ReaderHighlight = require("apps/reader/modules/readerhighlight")
-local ReaderHyphenation = require("apps/reader/modules/readerhyphenation")
 local ReaderKoptListener = require("apps/reader/modules/readerkoptlistener")
 local ReaderLink = require("apps/reader/modules/readerlink")
 local ReaderMenu = require("apps/reader/modules/readermenu")
+local ReaderPageMap = require("apps/reader/modules/readerpagemap")
 local ReaderPanning = require("apps/reader/modules/readerpanning")
 local ReaderRotation = require("apps/reader/modules/readerrotation")
 local ReaderPaging = require("apps/reader/modules/readerpaging")
@@ -45,6 +47,7 @@ local ReaderStatus = require("apps/reader/modules/readerstatus")
 local ReaderStyleTweak = require("apps/reader/modules/readerstyletweak")
 local ReaderToc = require("apps/reader/modules/readertoc")
 local ReaderTypeset = require("apps/reader/modules/readertypeset")
+local ReaderTypography = require("apps/reader/modules/readertypography")
 local ReaderView = require("apps/reader/modules/readerview")
 local ReaderWikipedia = require("apps/reader/modules/readerwikipedia")
 local ReaderZooming = require("apps/reader/modules/readerzooming")
@@ -304,8 +307,8 @@ function ReaderUI:init()
             view = self.view,
             ui = self
         })
-        -- hyphenation menu
-        self:registerModule("hyphenation", ReaderHyphenation:new{
+        -- typography menu (replaces previous hyphenation menu / ReaderHyphenation)
+        self:registerModule("typography", ReaderTypography:new{
             dialog = self.dialog,
             view = self.view,
             ui = self
@@ -313,6 +316,12 @@ function ReaderUI:init()
         -- rolling controller
         self:registerModule("rolling", ReaderRolling:new{
             pan_rate = pan_rate,
+            dialog = self.dialog,
+            view = self.view,
+            ui = self
+        })
+        -- pagemap controller
+        self:registerModule("pagemap", ReaderPageMap:new{
             dialog = self.dialog,
             view = self.view,
             ui = self
@@ -351,6 +360,11 @@ function ReaderUI:init()
         dialog = self.dialog,
         ui = self,
     })
+    -- collections/favorites view
+    self:registerModule("collections", FileManagerCollection:new{
+        dialog = self.dialog,
+        ui = self,
+    })
     -- book info
     self:registerModule("bookinfo", FileManagerBookInfo:new{
         dialog = self.dialog,
@@ -382,6 +396,9 @@ function ReaderUI:init()
         })
     end
 
+    -- Allow others to change settings based on external factors
+    -- Must be called after plugins are loaded & before setting are read.
+    self:handleEvent(Event:new("DocSettingsLoad", self.doc_settings, self.document))
     -- we only read settings after all the widgets are initialized
     self:handleEvent(Event:new("ReadSettings", self.doc_settings))
 
@@ -404,6 +421,11 @@ function ReaderUI:init()
         v()
     end
     self.postReaderCallback = nil
+
+    -- print("Ordered registered gestures:")
+    -- for _, tzone in ipairs(self._ordered_touch_zones) do
+    --     print("  "..tzone.def.id)
+    -- end
 end
 
 function ReaderUI:getLastDirFile()
@@ -439,14 +461,14 @@ function ReaderUI:showReader(file, provider)
 
     if lfs.attributes(file, "mode") ~= "file" then
         UIManager:show(InfoMessage:new{
-             text = T(_("File '%1' does not exist."), file)
+             text = T(_("File '%1' does not exist."), BD.filepath(file))
         })
         return
     end
 
-    if not DocumentRegistry:hasProvider(file) then
+    if not DocumentRegistry:hasProvider(file) and provider == nil then
         UIManager:show(InfoMessage:new{
-            text = T(_("File '%1' is not supported."), file)
+            text = T(_("File '%1' is not supported."), BD.filepath(file))
         })
         self:showFileManager(file)
         return
@@ -462,7 +484,7 @@ function ReaderUI:showReader(file, provider)
             (provider.provider == "mupdf" and type(bookmarks[1].page) == "string")) then
                 UIManager:show(ConfirmBox:new{
                     text = T(_("The document '%1' with bookmarks or highlights was previously opened with a different engine. To prevent issues, bookmarks need to be deleted before continuing."),
-                        file),
+                        BD.filepath(file)),
                     ok_text = _("Delete"),
                     ok_callback = function()
                         doc_settings:delSetting("bookmarks")
@@ -479,7 +501,7 @@ end
 
 function ReaderUI:showReaderCoroutine(file, provider)
     UIManager:show(InfoMessage:new{
-        text = T(_("Opening file '%1'."), file),
+        text = T(_("Opening file '%1'."), BD.filepath(file)),
         timeout = 0.0,
     })
     -- doShowReader might block for a long time, so force repaint here
@@ -528,8 +550,7 @@ function ReaderUI:doShowReader(file, provider)
             end
         end
     end
-    require("readhistory"):addItem(file)
-    G_reader_settings:saveSetting("lastfile", file)
+    require("readhistory"):addItem(file) -- (will update "lastfile")
     local reader = ReaderUI:new{
         dimen = Screen:getSize(),
         covers_fullscreen = true, -- hint for UIManager:_repaint()
@@ -651,8 +672,11 @@ function ReaderUI:notifyCloseDocument()
     end
 end
 
-function ReaderUI:onClose()
+function ReaderUI:onClose(full_refresh)
     logger.dbg("closing reader")
+    if full_refresh == nil then
+        full_refresh = true
+    end
     -- if self.dialog is us, we'll have our onFlushSettings() called
     -- by UIManager:close() below, so avoid double save
     if self.dialog ~= self then
@@ -662,7 +686,7 @@ function ReaderUI:onClose()
         logger.dbg("closing document")
         self:notifyCloseDocument()
     end
-    UIManager:close(self.dialog, "full")
+    UIManager:close(self.dialog, full_refresh and "full")
     -- serialize last used items for later launch
     Cache:serialize()
     if _running_instance == self then
@@ -679,11 +703,7 @@ function ReaderUI:dealWithLoadDocumentFailure()
     -- We must still remove it from lastfile and history (as it has
     -- already been added there) so that koreader don't crash again
     -- at next launch...
-    local readhistory = require("readhistory")
-    readhistory:removeItemByPath(self.document.file)
-    if G_reader_settings:readSetting("lastfile") == self.document.file then
-        G_reader_settings:saveSetting("lastfile", #readhistory.hist > 0 and readhistory.hist[1].file or nil)
-    end
+    require("readhistory"):removeItemByPath(self.document.file) -- (will update "lastfile")
     -- As we are in a coroutine, we can pause and show an InfoMessage before exiting
     local _coroutine = coroutine.running()
     if coroutine then
@@ -712,7 +732,7 @@ function ReaderUI:reloadDocument(after_close_callback)
     self:handleEvent(Event:new("CloseReaderMenu"))
     self:handleEvent(Event:new("CloseConfigMenu"))
     self.highlight:onClose() -- close highlight dialog if any
-    self:onClose()
+    self:onClose(false)
     if after_close_callback then
         -- allow caller to do stuff between close an re-open
         after_close_callback(file, provider)
@@ -725,8 +745,16 @@ function ReaderUI:switchDocument(new_file)
     self:handleEvent(Event:new("CloseReaderMenu"))
     self:handleEvent(Event:new("CloseConfigMenu"))
     self.highlight:onClose() -- close highlight dialog if any
-    self:onClose()
+    self:onClose(false)
     self:showReader(new_file)
+end
+
+function ReaderUI:getCurrentPage()
+    if self.document.info.has_pages then
+        return self.paging.current_page
+    else
+        return self.document:getCurrentPage()
+    end
 end
 
 return ReaderUI

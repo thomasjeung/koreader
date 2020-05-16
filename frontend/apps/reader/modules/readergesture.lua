@@ -1,3 +1,4 @@
+local BD = require("ui/bidi")
 local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local Device = require("device")
@@ -27,6 +28,10 @@ local action_strings = {
     page_jmp_fwd_1 = _("Next page"),
     prev_chapter = _("Previous chapter"),
     next_chapter = _("Next chapter"),
+    first_page = _("First page"),
+    last_page = _("Last page"),
+    prev_bookmark = _("Previous bookmark"),
+    next_bookmark = _("Next bookmark"),
     go_to = _("Go to"),
     skim = _("Skim"),
     back = _("Back"),
@@ -44,10 +49,12 @@ local action_strings = {
     book_info = _("Book information"),
     book_description = _("Book description"),
     book_cover = _("Book cover"),
+    stats_calendar_view = _("Statistics calendar view"),
 
     history = _("History"),
     open_previous_document = _("Open previous document"),
     filemanager = _("File browser"),
+    favorites = _("Favorites"),
 
     dictionary_lookup = _("Dictionary lookup"),
     wikipedia_lookup = _("Wikipedia lookup"),
@@ -69,16 +76,18 @@ local action_strings = {
     decrease_frontlight = _("Decrease frontlight brightness"),
     increase_frontlight_warmth = _("Increase frontlight warmth"),
     decrease_frontlight_warmth = _("Decrease frontlight warmth"),
+    toggle_hold_corners = _("Toggle hold corners"),
     toggle_gsensor = _("Toggle accelerometer"),
     toggle_rotation = _("Toggle rotation"),
 
-    wifi_on = _("Enable wifi"),
-    wifi_off = _("Disable wifi"),
-    toggle_wifi = _("Toggle wifi"),
+    wifi_on = _("Turn on Wi-Fi"),
+    wifi_off = _("Turn off Wi-Fi"),
+    toggle_wifi = _("Toggle Wi-Fi"),
 
     toggle_bookmark = _("Toggle bookmark"),
     toggle_page_flipping = _("Toggle page flipping"),
     toggle_reflow = _("Toggle reflow"),
+    toggle_inverse_reading_order = _("Toggle page turn direction"),
 
     zoom_contentwidth = _("Zoom to fit content width"),
     zoom_contentheight = _("Zoom to fit content height"),
@@ -97,6 +106,8 @@ local action_strings = {
     cycle_highlight_action = _("Cycle highlight action"),
     cycle_highlight_style = _("Cycle highlight style"),
     wallabag_download = _("Wallabag retrieval"),
+    kosync_push_progress = _("Push progress from this device"),
+    kosync_pull_progress = _("Pull progress from other devices"),
 }
 
 local custom_multiswipes_path = DataStorage:getSettingsDir().."/multiswipes.lua"
@@ -156,6 +167,7 @@ These advanced gestures consist of either straight swipes or diagonal swipes. To
 
 function ReaderGesture:init()
     if not Device:isTouchDevice() then return end
+    self.ignore_hold_corners = G_reader_settings:readSetting("ignore_hold_corners")
     self.multiswipes_enabled = G_reader_settings:readSetting("multiswipes_enabled")
     self.is_docless = self.ui == nil or self.ui.document == nil
     self.ges_mode = self.is_docless and "gesture_fm" or "gesture_reader"
@@ -197,6 +209,7 @@ function ReaderGesture:init()
         multiswipe_north_south_north = self.ges_mode == "gesture_reader" and "prev_chapter" or "nothing",
         multiswipe_south_north_south = self.ges_mode == "gesture_reader" and "next_chapter" or "nothing",
         multiswipe_west_east_west = "open_previous_document",
+        multiswipe_east_west_east = "favorites",
         multiswipe_east_north_west = self.ges_mode == "gesture_reader" and "zoom_contentwidth" or "nothing",
         multiswipe_south_east_north = self.ges_mode == "gesture_reader" and "zoom_contentheight" or "nothing",
         multiswipe_east_north_west_east = self.ges_mode == "gesture_reader" and "zoom_pagewidth" or "nothing",
@@ -220,6 +233,44 @@ function ReaderGesture:init()
     }
     local gm = G_reader_settings:readSetting(self.ges_mode)
     if gm == nil then G_reader_settings:saveSetting(self.ges_mode, {}) end
+
+    -- Some of these defaults need to be reversed in RTL mirrored UI,
+    -- and as we set them in the saved gestures, we need to reset them
+    -- to the defaults in case of UI language's direction change.
+    local mirrored_if_rtl = {
+        tap_top_left_corner = "tap_top_right_corner",
+        tap_right_bottom_corner = "tap_left_bottom_corner",
+    }
+    local is_rtl = BD.mirroredUILayout()
+    if is_rtl then
+        for k, v in pairs(mirrored_if_rtl) do
+            self.default_gesture[k], self.default_gesture[v] = self.default_gesture[v], self.default_gesture[k]
+        end
+    end
+    -- We remember the last UI direction gestures were made on. If it changes,
+    -- reset the mirrored_if_rtl ones to the default for the new direction.
+    local ges_dir_setting = self.ges_mode.."ui_lang_direction_rtl"
+    local prev_lang_dir_rtl = G_reader_settings:isTrue(ges_dir_setting)
+    if (is_rtl and not prev_lang_dir_rtl) or (not is_rtl and prev_lang_dir_rtl) then
+        local reset = false
+        for k, v in pairs(mirrored_if_rtl) do
+            -- We only replace them if they are still the other direction's default.
+            -- If not, the user has changed them: let him deal with setting new ones if needed.
+            if gm[k] == self.default_gesture[v] then
+                gm[k] = self.default_gesture[k]
+                reset = true
+            end
+            if gm[v] == self.default_gesture[k] then
+                gm[v] = self.default_gesture[v]
+                reset = true
+            end
+        end
+        if reset then
+            logger.info("UI language direction changed: resetting some gestures to direction default")
+        end
+        G_reader_settings:flipNilOrFalse(ges_dir_setting)
+    end
+
     self.ui.menu:registerToMainMenu(self)
     self:initGesture()
 end
@@ -302,7 +353,7 @@ function ReaderGesture:addToMainMenu(menu_items)
         text = _("Gesture manager"),
         sub_item_table = {
             {
-                text = _("Enable multiswipes"),
+                text = _("Turn on multiswipes"),
                 checked_func = function() return self.multiswipes_enabled end,
                 callback = function()
                     G_reader_settings:saveSetting("multiswipes_enabled", not self.multiswipes_enabled)
@@ -658,6 +709,10 @@ function ReaderGesture:buildMenu(ges, default)
         {"page_jmp_fwd_1", not self.is_docless},
         {"prev_chapter", not self.is_docless},
         {"next_chapter", not self.is_docless},
+        {"first_page", not self.is_docless},
+        {"last_page", not self.is_docless},
+        {"prev_bookmark", not self.is_docless},
+        {"next_bookmark", not self.is_docless},
         {"go_to", true},
         {"skim", not self.is_docless},
         {"back", true},
@@ -671,7 +726,7 @@ function ReaderGesture:buildMenu(ges, default)
         {"show_plus_menu", self.is_docless},
         {"folder_shortcuts", true, true},
 
-        { "toc", not self.is_docless},
+        {"toc", not self.is_docless},
         {"bookmarks", not self.is_docless},
         {"reading_progress", ReaderGesture.getReaderProgress ~= nil},
         {"book_statistics", not self.is_docless},
@@ -683,7 +738,9 @@ function ReaderGesture:buildMenu(ges, default)
 
         {"history", true},
         {"open_previous_document", true, true},
+        {"favorites", true},
         {"filemanager", not self.is_docless, true},
+        {"stats_calendar_view", true, true},
 
         {"dictionary_lookup", true},
         {"wikipedia_lookup", true, true},
@@ -707,6 +764,7 @@ function ReaderGesture:buildMenu(ges, default)
         {"increase_frontlight_warmth", Device:hasNaturalLight()},
         {"decrease_frontlight_warmth", Device:hasNaturalLight(), true},
 
+        {"toggle_hold_corners", true},
         {"toggle_gsensor", Device:canToggleGSensor()},
         {"toggle_rotation", not self.is_docless, true},
 
@@ -720,6 +778,7 @@ function ReaderGesture:buildMenu(ges, default)
         {"toggle_bookmark", not self.is_docless, true},
         {"toggle_page_flipping", not self.is_docless, true},
         {"toggle_reflow", not self.is_docless, true},
+        {"toggle_inverse_reading_order", not self.is_docless, true},
         {"zoom_contentwidth", not self.is_docless},
         {"zoom_contentheight", not self.is_docless},
         {"zoom_pagewidth", not self.is_docless},
@@ -730,6 +789,9 @@ function ReaderGesture:buildMenu(ges, default)
         {"cycle_highlight_action", not self.is_docless},
         {"cycle_highlight_style", not self.is_docless},
         {"wallabag_download", self.ui.wallabag ~= nil},
+
+        {"kosync_push_progress", not self.is_docless},
+        {"kosync_pull_progress", not self.is_docless},
     }
     local return_menu = {}
     -- add default action to the top of the submenu
@@ -958,6 +1020,10 @@ function ReaderGesture:setupGesture(ges, action)
             "readerfooter_tap",
         }
         overrides_hold_corner = {
+            -- As hold corners are "ignored" by default, and we have
+            -- a "Ignore hold on corners" menu item and gesture, let
+            -- them have priority over word lookup and text selection.
+            "readerhighlight_hold",
             "readerfooter_hold",
         }
         overrides_vertical_edge = {
@@ -1173,18 +1239,19 @@ function ReaderGesture:registerGesture(ges, action, ges_type, zone, overrides, d
                 if ges == "multiswipe" then
                     if self.multiswipes_enabled == nil then
                         UIManager:show(ConfirmBox:new{
-                            text = _("You have just performed a multiswipe gesture for the first time.") .."\n\n".. multiswipes_info_text,
-                            ok_text = _("Enable"),
+                            text = _("You have just performed your first multiswipe gesture.") .."\n\n".. multiswipes_info_text,
+                            ok_text = _("Turn on"),
                             ok_callback = function()
                                 G_reader_settings:saveSetting("multiswipes_enabled", true)
                                 self.multiswipes_enabled = true
                             end,
-                            cancel_text = _("Disable"),
+                            cancel_text = _("Turn off"),
                             cancel_callback = function()
                                 G_reader_settings:saveSetting("multiswipes_enabled", false)
                                 self.multiswipes_enabled = false
                             end,
                         })
+                        return
                     else
                         return self:multiswipeAction(gest.multiswipe_directions, gest)
                     end
@@ -1202,12 +1269,15 @@ local function lightFrontlight()
 end
 
 function ReaderGesture:gestureAction(action, ges)
-    if action == "ignore" then
+    if action == "ignore"
+        or (ges.ges == "hold" and self.ignore_hold_corners) then
         return
     elseif action == "reading_progress" and ReaderGesture.getReaderProgress then
         UIManager:show(ReaderGesture.getReaderProgress())
     elseif action == "book_statistics" and ReaderGesture.getBookStats then
         UIManager:show(ReaderGesture.getBookStats())
+    elseif action == "stats_calendar_view" and ReaderGesture.getCalendarView then
+        UIManager:show(ReaderGesture.getCalendarView())
     elseif action == "toc" then
         self.ui:handleEvent(Event:new("ShowToc"))
     elseif action == "night_mode" then
@@ -1225,6 +1295,8 @@ function ReaderGesture:gestureAction(action, ges)
         self.ui:handleEvent(Event:new("ShowBookmark"))
     elseif action == "history" then
         self.ui:handleEvent(Event:new("ShowHist"))
+    elseif action == "favorites" then
+        self.ui:handleEvent(Event:new("ShowColl", "favorites"))
     elseif action == "book_info" then
         self.ui:handleEvent(Event:new("ShowBookInfo"))
     elseif action == "book_description" then
@@ -1243,8 +1315,18 @@ function ReaderGesture:gestureAction(action, ges)
         self.ui:handleEvent(Event:new("GotoViewRel", -1))
     elseif action == "next_chapter" then
         self.ui:handleEvent(Event:new("GotoNextChapter"))
+    elseif action == "first_page" then
+        self.ui:handleEvent(Event:new("GotoPage", 1))
+    elseif action == "last_page" then
+        if self.view.document then
+            self.ui:handleEvent(Event:new("GotoPage", self.view.document:getPageCount()))
+        end
     elseif action == "prev_chapter" then
         self.ui:handleEvent(Event:new("GotoPrevChapter"))
+    elseif action == "next_bookmark" then
+        self.ui:handleEvent(Event:new("GotoNextBookmarkFromPage"))
+    elseif action == "prev_bookmark" then
+        self.ui:handleEvent(Event:new("GotoPreviousBookmarkFromPage"))
     elseif action == "go_to" then
         self.ui:handleEvent(Event:new("ShowGotoDialog"))
     elseif action == "skim" then
@@ -1352,6 +1434,8 @@ function ReaderGesture:gestureAction(action, ges)
         end
     elseif action == "toggle_bookmark" then
         self.ui:handleEvent(Event:new("ToggleBookmark"))
+    elseif action == "toggle_inverse_reading_order" then
+        self:onToggleReadingOrder()
     elseif action == "toggle_frontlight" then
         -- when using frontlight system settings
         if lightFrontlight() then
@@ -1363,6 +1447,8 @@ function ReaderGesture:gestureAction(action, ges)
         end
         Device:getPowerDevice():toggleFrontlight()
         self:onShowFLOnOff()
+    elseif action == "toggle_hold_corners" then
+        self:onIgnoreHoldCorners()
     elseif action == "toggle_gsensor" then
         G_reader_settings:flipNilOrFalse("input_ignore_gsensor")
         Device:toggleGSensor(not G_reader_settings:isTrue("input_ignore_gsensor"))
@@ -1394,7 +1480,7 @@ function ReaderGesture:gestureAction(action, ges)
 
         if not NetworkMgr:isOnline() then
             UIManager:show(InfoMessage:new{
-                text = _("Enabling wifi…"),
+                text = _("Turning on Wi-Fi…"),
                 timeout = 1,
             })
 
@@ -1405,7 +1491,7 @@ function ReaderGesture:gestureAction(action, ges)
             NetworkMgr:turnOffWifi()
 
             UIManager:show(InfoMessage:new{
-                text = _("Wifi disabled."),
+                text = _("Wi-Fi off."),
                 timeout = 1,
             })
         end
@@ -1415,7 +1501,7 @@ function ReaderGesture:gestureAction(action, ges)
         NetworkMgr:turnOffWifi()
 
         UIManager:show(InfoMessage:new{
-            text = _("Wifi disabled."),
+            text = _("Wi-Fi off."),
             timeout = 1,
         })
     elseif action == "wifi_on" then
@@ -1428,14 +1514,14 @@ function ReaderGesture:gestureAction(action, ges)
             })
 
             -- NB Normal widgets should use NetworkMgr:promptWifiOn()
-            -- This is specifically the toggle wifi action, so consent is implied.
+            -- This is specifically the toggle Wi-Fi action, so consent is implied.
             NetworkMgr:turnOnWifi()
         else
             local info_text
             local current_network = NetworkMgr:getCurrentNetwork()
             -- this method is only available for some implementations
             if current_network and current_network.ssid then
-                info_text = T(_("Already connected to network %1."), current_network.ssid)
+                info_text = T(_("Already connected to network %1."), BD.wrap(current_network.ssid))
             else
                 info_text = _("Already connected.")
             end
@@ -1490,6 +1576,10 @@ function ReaderGesture:gestureAction(action, ges)
         self.ui:handleEvent(Event:new("CycleHighlightAction"))
     elseif action == "cycle_highlight_style" then
         self.ui:handleEvent(Event:new("CycleHighlightStyle"))
+    elseif action == "kosync_push_progress" then
+        self.ui:handleEvent(Event:new("KOSyncPushProgress"))
+    elseif action == "kosync_pull_progress" then
+        self.ui:handleEvent(Event:new("KOSyncPullProgress"))
     end
     return true
 end
@@ -1505,12 +1595,7 @@ function ReaderGesture:multiswipeAction(multiswipe_directions, ges)
 end
 
 function ReaderGesture:pageUpdate(page)
-    local curr_page
-    if self.document.info.has_pages then
-        curr_page = self.ui.paging.current_page
-    else
-        curr_page = self.document:getCurrentPage()
-    end
+    local curr_page = self.ui:getCurrentPage()
     if curr_page and page then
         curr_page = curr_page + page
         self.ui:handleEvent(Event:new("GotoPage", curr_page))
@@ -1518,13 +1603,23 @@ function ReaderGesture:pageUpdate(page)
 
 end
 
+function ReaderGesture:onIgnoreHoldCorners(ignore_hold_corners)
+    if ignore_hold_corners == nil then
+        G_reader_settings:flipNilOrFalse("ignore_hold_corners")
+    else
+        G_reader_settings:saveSetting("ignore_hold_corners", ignore_hold_corners)
+    end
+    self.ignore_hold_corners = G_reader_settings:isTrue("ignore_hold_corners")
+    return true
+end
+
 function ReaderGesture:onShowFLOnOff()
     local powerd = Device:getPowerDevice()
     local new_text
     if powerd.is_fl_on then
-        new_text = _("Frontlight is on.")
+        new_text = _("Frontlight on.")
     else
-        new_text = _("Frontlight is off.")
+        new_text = _("Frontlight off.")
     end
     UIManager:show(Notification:new{
         text = new_text,
@@ -1536,13 +1631,28 @@ end
 function ReaderGesture:onGSensorToggle()
     local new_text
     if G_reader_settings:isTrue("input_ignore_gsensor") then
-        new_text = _("Accelerometer rotation events will now be ignored.")
+        new_text = _("Accelerometer rotation events off.")
     else
-        new_text = _("Accelerometer rotation events will now be honored.")
+        new_text = _("Accelerometer rotation events on.")
     end
     UIManager:show(Notification:new{
         text = new_text,
         timeout = 1.0,
+    })
+    return true
+end
+
+function ReaderGesture:onToggleReadingOrder()
+    local document_module = self.ui.document.info.has_pages and self.ui.paging or self.ui.rolling
+    document_module.inverse_reading_order = not document_module.inverse_reading_order
+    document_module:setupTouchZones()
+    local is_rtl = BD.mirroredUILayout()
+    if document_module.inverse_reading_order then
+        is_rtl = not is_rtl
+    end
+    UIManager:show(Notification:new{
+        text = is_rtl and _("RTL page turning.") or _("LTR page turning."),
+        timeout = 2.5,
     })
     return true
 end
